@@ -1,0 +1,6 @@
+streamlit
+pandas
+pydantic>=2
+xlsxwriter
+# For live trading
+kiteconnect
