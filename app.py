@@ -11,7 +11,8 @@ from services.validate import normalize_and_validate
 from services.margins import estimate_notional
 from services.placer import place_orders
 from services.results import dataframe_to_excel_download
-from services.gtt import place_gtts_single, place_gtts_oco  # NEW: OCO support
+from services.gtt import place_gtts_single, place_gtts_oco
+from services.matcher import fetch_sellable_quantities, cap_sell_intents_by_sellable  # NEW
 from models import OrderIntent
 
 
@@ -149,7 +150,13 @@ colA, colB, colC, colD = st.columns(4)
 estimate_clicked = colA.button("Estimate margins", disabled=not validated_ok)
 place_clicked = colB.button("Place orders", disabled=(not validated_ok) or (mode == "Live" and not access_token))
 create_gtt_single_clicked = colC.button("Create GTTs (single-leg)", disabled=not validated_ok)
-create_gtt_oco_clicked = colD.button("Create GTTs (OCO)", disabled=not validated_ok)  # NEW
+create_gtt_oco_clicked = colD.button("Create GTTs (OCO)", disabled=not validated_ok)
+
+# Optional auto-cap UI (NEW)
+st.markdown("#### Optional: Auto-cap SELLs to what you actually own/have bought today")
+auto_cap = st.checkbox("Enable auto-cap for SELL orders (holdings + today's BUY fills)", value=False)
+strict_product = st.checkbox("Strict product matching (SELL MIS must match MIS pool)", value=True)
+st.caption("If enabled, SELL quantities are capped to available pool per (exchange, symbol, product).")
 
 
 # =========================================================
@@ -163,7 +170,7 @@ if estimate_clicked and validated_ok:
 
 
 # =========================================================
-# Place Orders (market/limit/SL)
+# Place Orders (market/limit/SL) with optional SELL auto-cap
 # =========================================================
 if place_clicked and validated_ok:
     live = (mode == "Live")
@@ -180,8 +187,22 @@ if place_clicked and validated_ok:
             st.info(f"Placing as user_id={prof.get('user_id')}")
             client = auth.kite
 
+        # --- NEW: Optional SELL capping ---
+        adj_intents = intents
+        cap_report = None
+        if auto_cap:
+            if live and client is not None:
+                sellable = fetch_sellable_quantities(client)
+                adj_intents, cap_report = cap_sell_intents_by_sellable(
+                    intents, sellable, strict_product=strict_product
+                )
+                st.subheader("Sell Matching Report")
+                st.dataframe(cap_report, use_container_width=True)
+            else:
+                st.warning("Auto-cap requires Live session to fetch holdings/positions. Proceeding without capping.")
+
         with st.status("Placing orders…", expanded=True) as s:
-            res_df = place_orders(intents, kite=client, live=live)
+            res_df = place_orders(adj_intents, kite=client, live=live)
             s.update(state="complete")
 
         st.subheader("Results")
@@ -220,7 +241,11 @@ if create_gtt_single_clicked and validated_ok:
         st.subheader("GTT Results (single-leg)")
         st.dataframe(gtt_df, use_container_width=True)
         data, fname = dataframe_to_excel_download(gtt_df)
-        st.download_button("Download gtt_results_single.xlsx", data=data, file_name=fname.replace("results", "gtt_results_single"))
+        st.download_button(
+            "Download gtt_results_single.xlsx",
+            data=data,
+            file_name=fname.replace("results", "gtt_results_single"),
+        )
 
         st.success("GTT routine finished")
     except Exception as e:
@@ -244,13 +269,17 @@ if create_gtt_oco_clicked and validated_ok:
         intents = [OrderIntent(**d) for d in validated_rows]
 
         with st.status("Creating GTTs (OCO)…", expanded=True) as s:
-            gtt_oco_df = place_gtts_oco(intents, kite=auth.kite)  # NEW call
+            gtt_oco_df = place_gtts_oco(intents, kite=auth.kite)
             s.update(state="complete")
 
         st.subheader("GTT Results (OCO)")
         st.dataframe(gtt_oco_df, use_container_width=True)
         data, fname = dataframe_to_excel_download(gtt_oco_df)
-        st.download_button("Download gtt_results_oco.xlsx", data=data, file_name=fname.replace("results", "gtt_results_oco"))
+        st.download_button(
+            "Download gtt_results_oco.xlsx",
+            data=data,
+            file_name=fname.replace("results", "gtt_results_oco"),
+        )
 
         st.success("OCO GTT routine finished")
     except Exception as e:
