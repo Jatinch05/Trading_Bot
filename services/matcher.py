@@ -1,11 +1,9 @@
-# services/matcher.py — SELL auto-cap helpers (NRML-only)
+# services/matcher.py — NRML-only SELL checks
 
 from __future__ import annotations
-from typing import Dict, Tuple, List, Iterable
+from typing import Dict, Tuple, List, Iterable, Any
 import pandas as pd
-
 from models import OrderIntent
-
 
 Key = Tuple[str, str, str]  # (exchange, symbol, product)
 
@@ -16,10 +14,8 @@ def fetch_sellable_quantities(kite) -> Dict[Key, int]:
     NRML-only engine: we consider only NRML positions (net > 0).
     """
     sellable: Dict[Key, int] = {}
-
     try:
         pos = kite.positions() or {}
-        # Prefer 'net' which reflects current net positions
         for p in pos.get("net") or []:
             exch = str(p.get("exchange") or "").upper()
             sym  = str(p.get("tradingsymbol") or "").upper()
@@ -31,73 +27,54 @@ def fetch_sellable_quantities(kite) -> Dict[Key, int]:
                 key = (exch, sym, prod)
                 sellable[key] = sellable.get(key, 0) + netq
     except Exception:
-        # On failure, return empty sellable; caller should handle gracefully
         return {}
-
     return sellable
 
 
-def cap_sell_intents_by_sellable(
+def filter_sell_intents_exact(
     intents: Iterable[OrderIntent],
     sellable: Dict[Key, int],
-    strict_product: bool = True,
 ) -> Tuple[List[OrderIntent], pd.DataFrame]:
     """
-    For SELL regular orders, cap quantity to what's available in `sellable`.
-    Returns (adjusted_intents, report_df).
-    If strict_product=False, we aggregate availability across all products for that (exchange,symbol).
-    With NRML-only engine, both modes behave the same, but we keep the switch for future extensibility.
+    Enforce EXACT MATCH for all SELL intents (regular and GTT).
+    - product is assumed NRML everywhere
+    - if available < requested qty -> drop the SELL (do not place)
+    - if available >= requested -> keep and decrement pool
+    BUY intents are always kept.
+    Returns (kept_intents, report_df).
     """
-    adjusted: List[OrderIntent] = []
-    report_rows: List[Dict[str, object]] = []
+    kept: List[OrderIntent] = []
+    rows: List[Dict[str, Any]] = []
 
-    # Build relaxed index if needed
-    by_ex_sym: Dict[Tuple[str, str], int] = {}
-    if not strict_product:
-        for (ex, sym, prod), qty in sellable.items():
-            by_ex_sym[(ex, sym)] = by_ex_sym.get((ex, sym), 0) + qty
+    # work on a copy of pool
+    pool = dict(sellable)
 
     for it in intents:
-        if (it.gtt or "").upper() == "YES":
-            # Only regular orders are matched/capped; GTT fires later at broker
-            adjusted.append(it)
-            continue
+        exch = it.exchange
+        sym  = it.symbol
+        prod = (it.product or "NRML").upper()
 
         if it.txn_type != "SELL":
-            adjusted.append(it)
+            kept.append(it)
             continue
 
-        key = (it.exchange, it.symbol, it.product or "NRML")
-        avail = 0
-        if strict_product:
-            avail = int(sellable.get(key, 0))
+        key = (exch, sym, prod)
+        avail = int(pool.get(key, 0))
+        req   = int(it.qty)
+
+        if avail >= req:
+            kept.append(it)
+            pool[key] = avail - req
+            rows.append({
+                "exchange": exch, "symbol": sym, "product": prod,
+                "requested_qty": req, "available_before": avail,
+                "placed_qty": req, "status": "OK"
+            })
         else:
-            avail = int(by_ex_sym.get((it.exchange, it.symbol), 0))
+            rows.append({
+                "exchange": exch, "symbol": sym, "product": prod,
+                "requested_qty": req, "available_before": avail,
+                "placed_qty": 0, "status": "SKIPPED_INSUFFICIENT"
+            })
 
-        req = int(it.qty)
-        place_qty = min(req, max(avail, 0))
-
-        report_rows.append({
-            "exchange": it.exchange,
-            "symbol": it.symbol,
-            "product": it.product or "NRML",
-            "requested_qty": req,
-            "available_qty": avail,
-            "placed_qty": place_qty,
-            "shortfall": max(req - place_qty, 0),
-        })
-
-        if place_qty <= 0:
-            # skip placing this SELL
-            continue
-
-        adjusted.append(it.model_copy(update={"qty": place_qty}))
-
-        # Decrement pool
-        if strict_product:
-            sellable[key] = max(avail - place_qty, 0)
-        else:
-            by_ex_sym[(it.exchange, it.symbol)] = max(avail - place_qty, 0)
-
-    report_df = pd.DataFrame(report_rows)
-    return adjusted, report_df
+    return kept, pd.DataFrame(rows)

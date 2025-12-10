@@ -1,5 +1,5 @@
-# app.py — NRML-only, per-session tokens, row selection to place, exit-all/exit-selected,
-# unified "place all / place selected", optional SELL auto-cap, GTT single/OCO
+# app.py — NRML-only, per-session tokens, row selection, exit-all/selected,
+# exact-match SELLs for both regular and GTT
 
 import streamlit as st
 import pandas as pd
@@ -14,10 +14,10 @@ from services.margins import estimate_notional
 from services.placer import place_orders
 from services.results import dataframe_to_excel_download
 from services.gtt import place_gtts_single, place_gtts_oco
-from services.matcher import fetch_sellable_quantities, cap_sell_intents_by_sellable
+from services.matcher import fetch_sellable_quantities, filter_sell_intents_exact
 from models import OrderIntent
 
-# ============================ Setup ============================
+# ---------------- Setup ----------------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 
@@ -30,7 +30,7 @@ if "api_key_used_for_token" not in st.session_state:
 
 access_token = st.session_state["access_token"]
 
-# ===================== Sidebar: creds + mode ====================
+# ------------- Sidebar: creds + mode -------------
 saved_creds = read_json(CREDS_PATH, {}) or {}
 pref_key = saved_creds.get("api_key", "")
 pref_secret = saved_creds.get("api_secret", "")
@@ -49,7 +49,7 @@ if st.sidebar.button("Sign out / Clear token", use_container_width=True):
     st.session_state["api_key_used_for_token"] = None
     st.sidebar.success("Session token cleared")
 
-# ====================== Auth (per-session) ======================
+# ---------------- Auth ----------------
 auth = None
 if api_key and api_secret:
     try:
@@ -61,7 +61,7 @@ if api_key and api_secret:
     except Exception as e:
         st.sidebar.error(f"Auth init failed: {e}")
 
-# ========================= Login flow ==========================
+# ---------------- Login flow ----------------
 if st.sidebar.button("Get Login URL", disabled=(auth is None), use_container_width=True):
     try:
         st.sidebar.code(auth.login_url())
@@ -76,7 +76,7 @@ if st.sidebar.button("Exchange token", disabled=(auth is None or not request_tok
         st.session_state["access_token"] = new_token
         auth.kite.set_access_token(new_token)
         st.session_state["kite"] = auth.kite
-        st.session_state["api_key_used_for_token"] = api_key
+        st.session_state["api_key_used_for_token"] = api_key  # pin api_key used
         st.sidebar.success("New token generated (session-only)")
     except Exception as e:
         st.sidebar.error(f"Token exchange failed: {e}")
@@ -89,12 +89,9 @@ if st.sidebar.button("Test session", disabled=(st.session_state["kite"] is None 
     except Exception as e:
         st.sidebar.error(f"Session test failed: {e}")
 
-# ========================= Upload Excel ========================
+# ---------------- Upload Excel ----------------
 with st.expander("Excel format (required columns)"):
-    st.write(
-        "`symbol, exchange, txn_type, qty, order_type, price, trigger_price, "
-        "product, validity, variety, disclosed_qty, tag`"
-    )
+    st.write("`symbol, exchange, txn_type, qty, order_type, price, trigger_price, product, validity, variety, disclosed_qty, tag`")
     st.caption("Sheet name: 'Orders'")
     st.markdown("**GTT (single-leg)**: `gtt=YES, gtt_type=SINGLE, trigger_price, limit_price`")
     st.markdown("**GTT (OCO)**: `gtt=YES, gtt_type=OCO, trigger_price_1, limit_price_1, trigger_price_2, limit_price_2`")
@@ -111,7 +108,7 @@ if file:
 
 st.markdown("---")
 
-# =========================== Validate ==========================
+# ---------------- Validate ----------------
 validate_clicked = st.button("Validate orders", disabled=raw_df is None)
 instruments = Instruments.load()
 
@@ -121,18 +118,16 @@ if validate_clicked and raw_df is not None:
         st.success(f"Validated {len(intents)} rows. Errors: {len(errors)}")
         st.session_state["validated_rows"] = [o.model_dump() for o in intents]
         st.session_state["validated_df"] = vdf.copy()
-
         if errors:
             edf = pd.DataFrame([{"row": i, "error": e} for i, e in errors])
             st.error("Some rows failed.")
             st.dataframe(edf, use_container_width=True)
-
         st.subheader("Validated (augmented)")
         st.dataframe(vdf, use_container_width=True)
     except Exception as e:
         st.error(f"Validation failed: {e}")
 
-# ========== Selection UI for placing subset of rows ============
+# ---------------- Selection UI ----------------
 validated_rows = st.session_state.get("validated_rows", [])
 validated_df = st.session_state.get("validated_df", pd.DataFrame())
 validated_ok = len(validated_rows) > 0
@@ -151,20 +146,14 @@ if validated_ok and not validated_df.empty:
     )
     st.session_state["selected_mask"] = selected_df["select"].fillna(False).tolist()
 
-# ============== Optional auto-cap (SELL safety) ================
-st.markdown("#### Optional: Auto-cap SELLs to what you actually own/have bought today")
-auto_cap = st.checkbox("Enable auto-cap for SELL orders (holdings + today's BUY fills)", value=False)
-strict_product = st.checkbox("Strict product matching (SELL MIS must match MIS pool)", value=True)
-st.caption("When enabled, SELL quantities are capped to available pool per (exchange, symbol, product).")
-
-# ========================= Action buttons ======================
+# ---------------- Actions ----------------
 col1, col2, col3, col4 = st.columns(4)
 place_all_clicked      = col1.button("Place all orders", disabled=not validated_ok, use_container_width=True)
 place_selected_clicked = col2.button("Place selected orders", disabled=not validated_ok, use_container_width=True)
 exit_all_clicked       = col3.button("Exit all live orders", use_container_width=True)
 exit_selected_clicked  = col4.button("Exit selected orders", use_container_width=True)
 
-# ============================ Helpers ==========================
+# ---------------- Helpers ----------------
 def _ensure_live_client_or_stop():
     if st.session_state["kite"] is None or st.session_state["access_token"] is None:
         st.error("Live action requires a valid session token. Exchange your token first.")
@@ -184,15 +173,6 @@ def _split_regular_gtt(intents):
     regular = [i for i in intents if (i.gtt or "").upper() != "YES"]
     gtts    = [i for i in intents if (i.gtt or "").upper() == "YES"]
     return regular, gtts
-
-def _apply_sell_autocap_if_enabled(intents, client):
-    if not auto_cap or not intents:
-        return intents, None
-    sellable = fetch_sellable_quantities(client)
-    adj_intents, cap_report = cap_sell_intents_by_sellable(
-        intents, sellable, strict_product=strict_product
-    )
-    return adj_intents, cap_report
 
 def _build_exit_intents_from_positions(client, symbols_filter=None):
     intents_out = []
@@ -241,17 +221,22 @@ def _build_exit_intents_from_positions(client, symbols_filter=None):
         ))
     return intents_out
 
-# =============== Placement flow (single function) ===============
-def _place_bundle(intents, client, live, show_cap_report=True):
-    """Place REGULAR then GTT (single + OCO)."""
-    regular_intents, gtt_intents = _split_regular_gtt(intents)
+# ---------------- Placement flow ----------------
+def _place_bundle(intents, client, live):
+    """
+    Pipeline: exact-match SELLs (regular + GTT) -> split -> place.
+    """
+    # Enforce exact-match SELLs using current NRML positions (live only)
+    if live and client is not None:
+        sellable = fetch_sellable_quantities(client)
+        intents, exact_report = filter_sell_intents_exact(intents, sellable)
+        st.subheader("Sell Exact-Match Report")
+        if exact_report is not None and not exact_report.empty:
+            st.dataframe(exact_report, use_container_width=True)
+        else:
+            st.info("No SELL rows in this batch.")
 
-    # Optional SELL auto-cap only for regular SELLs
-    if auto_cap and regular_intents:
-        regular_intents, cap_report = _apply_sell_autocap_if_enabled(regular_intents, client)
-        if show_cap_report and cap_report is not None and not cap_report.empty:
-            st.subheader("Sell Matching Report")
-            st.dataframe(cap_report, use_container_width=True)
+    regular_intents, gtt_intents = _split_regular_gtt(intents)
 
     # 1) Place REGULAR orders
     reg_res_df = pd.DataFrame()
@@ -296,7 +281,7 @@ def _place_bundle(intents, client, live, show_cap_report=True):
     else:
         st.info("No OCO GTTs to create.")
 
-# =================== Actions: Place All/Selected =================
+# ---------------- Actions ----------------
 if place_all_clicked and validated_ok:
     live = (mode == "Live")
     try:
@@ -328,7 +313,7 @@ if place_selected_clicked and validated_ok:
     except Exception as e:
         st.error(f"Selected placement failed: {e}")
 
-# =================== Exit flows (All / Selected) =================
+# ---------------- Exit flows ----------------
 st.markdown("---")
 st.markdown("### Live Positions (NRML)")
 if st.button("Refresh positions", use_container_width=True):
@@ -405,15 +390,13 @@ if exit_selected_clicked:
     except Exception as e:
         st.error(f"Exit selected failed: {e}")
 
-# ===================== Optional: margins demo ===================
+# ---------------- Optional: margins demo ----------------
 if validated_ok and st.button("Estimate margins (demo)", use_container_width=True):
     intents = [OrderIntent(**d) for d in validated_rows]
     mdf = estimate_notional(intents)
     st.subheader("Margin Estimate (demo)")
     st.dataframe(mdf, use_container_width=True)
 
-# ============================ Debug ============================
+# ---------------- Debug ----------------
 st.markdown("### Session Debug")
-st.json({
-    "SESSION_STATE_ACCESS_TOKEN_PRESENT": st.session_state.get("access_token") is not None,
-})
+st.json({"SESSION_STATE_ACCESS_TOKEN_PRESENT": st.session_state.get("access_token") is not None})
