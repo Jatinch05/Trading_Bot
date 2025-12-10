@@ -1,6 +1,6 @@
-# models.py
-from __future__ import annotations
+# models.py — NRML-only
 
+from __future__ import annotations
 from typing import Optional
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -8,7 +8,6 @@ _ALLOWED_ORDER_TYPES = {"MARKET", "LIMIT", "SL", "SL-M"}
 
 
 class OrderIntent(BaseModel):
-    # Core order fields
     symbol: str
     exchange: str
     txn_type: str
@@ -24,18 +23,15 @@ class OrderIntent(BaseModel):
     disclosed_qty: Optional[int] = None
     tag: Optional[str] = None
 
-    # GTT extensions (passthrough; used by services.gtt)
-    gtt: Optional[str] = None             # "YES" or ""
-    gtt_type: Optional[str] = None        # "SINGLE" or "OCO"
-    limit_price: Optional[float] = None   # SINGLE
+    # GTT extensions
+    gtt: Optional[str] = None            # "YES" or ""
+    gtt_type: Optional[str] = None       # "SINGLE" or "OCO"
+    limit_price: Optional[float] = None  # SINGLE
     trigger_price_1: Optional[float] = None  # OCO
     limit_price_1: Optional[float] = None    # OCO
     trigger_price_2: Optional[float] = None  # OCO
     limit_price_2: Optional[float] = None    # OCO
 
-    # -------------------------
-    # Field-level validators
-    # -------------------------
     @field_validator("symbol")
     @classmethod
     def _symbol_norm(cls, v: str) -> str:
@@ -93,42 +89,31 @@ class OrderIntent(BaseModel):
             return v
         return str(v).strip().upper()
 
-    # -------------------------
-    # Model-level validator
-    # -------------------------
     @model_validator(mode="after")
     def _cross_field_rules(self) -> "OrderIntent":
-        """
-        Enforce cross-field rules, with an explicit exception for GTT rows:
-        - If gtt == "YES": allow trigger fields irrespective of order_type; enforce SINGLE/OCO requirements.
-        - If not GTT:
-            * MARKET: trigger_price must be None; price ignored.
-            * LIMIT/SL/SL-M: price required; SL/SL-M also require trigger_price.
-        """
+        # Force NRML everywhere
+        self.product = "NRML"
+        self.validity = (self.validity or "DAY").upper()
+        self.variety = (self.variety or "regular").upper()
+
         is_gtt = (self.gtt or "").strip().upper() == "YES"
         ot = (self.order_type or "").upper()
 
         if not is_gtt:
-            # ---- Non-GTT orders ----
             if ot == "MARKET":
-                # market should not carry a trigger; price is ignored
                 if self.trigger_price is not None:
                     raise ValueError("MARKET must not include trigger_price")
                 self.price = None
             elif ot in {"LIMIT", "SL", "SL-M"}:
                 if self.price is None:
                     raise ValueError(f"{ot} requires price")
-                # For stop variants, trigger_price is required
                 if ot in {"SL", "SL-M"} and self.trigger_price is None:
                     raise ValueError(f"{ot} requires trigger_price")
         else:
-            # ---- GTT orders ----
             self.gtt = "YES"
             gtt_type = (self.gtt_type or "SINGLE").strip().upper()
             self.gtt_type = gtt_type
-
-            # Normal order price field is irrelevant for GTT
-            self.price = None
+            self.price = None  # irrelevant for GTT
 
             if gtt_type == "SINGLE":
                 if self.trigger_price is None:
@@ -141,9 +126,20 @@ class OrderIntent(BaseModel):
                     raise ValueError("GTT OCO requires trigger_price_1/limit_price_1 and trigger_price_2/limit_price_2")
                 if float(self.trigger_price_1) == float(self.trigger_price_2):
                     raise ValueError("OCO trigger prices must differ")
-                # single-leg trigger_price not used for OCO
                 self.trigger_price = None
             else:
                 raise ValueError("gtt_type must be SINGLE or OCO")
-
         return self
+
+    # compatibility aliases for any older code
+    @property
+    def tradingsymbol(self) -> str:
+        return self.symbol
+
+    @property
+    def transaction_type(self) -> str:
+        return self.txn_type
+
+    @property
+    def quantity(self) -> int:
+        return self.qty

@@ -1,6 +1,6 @@
-# services/gtt.py
-from __future__ import annotations
+# services/gtt.py — NRML-only GTT placement
 
+from __future__ import annotations
 from typing import Iterable, Any, Dict, List
 import pandas as pd
 
@@ -31,18 +31,12 @@ def _as_int(val, name):
     except Exception:
         raise ValueError(f"{name} must be an integer")
 
+def _resolve_gtt_product(exchange: str, intent_product: str | None) -> str:
+    # Force NRML for all GTT legs
+    return "NRML"
+
 
 def place_gtts_single(intents: Iterable[Any], kite) -> pd.DataFrame:
-    """
-    Create SINGLE-leg GTTs.
-    Expected on each intent:
-      - symbol, exchange, txn_type (BUY/SELL), qty
-      - gtt == 'YES', gtt_type == 'SINGLE'
-      - trigger_price, limit_price
-      - last_price optional (we try kite.ltp if missing)
-
-    Returns DataFrame with per-row results.
-    """
     results: List[Dict[str, Any]] = []
 
     for idx, it in enumerate(intents):
@@ -69,7 +63,6 @@ def place_gtts_single(intents: Iterable[Any], kite) -> pd.DataFrame:
             trigger_price = _as_float(_get_attr(it, "trigger_price", "TriggerPrice"), "trigger_price")
             limit_price   = _as_float(_get_attr(it, "limit_price",   "LimitPrice"),   "limit_price")
 
-            # Resolve last_price for trigger conditioning; safe fallback to 0.0
             last_price = _get_attr(it, "last_price", "LastPrice")
             if last_price is None:
                 try:
@@ -77,6 +70,8 @@ def place_gtts_single(intents: Iterable[Any], kite) -> pd.DataFrame:
                     last_price = float(ltp[f"{exchange}:{symbol}"]["last_price"])
                 except Exception:
                     last_price = 0.0
+
+            product = _resolve_gtt_product(exchange, _get_attr(it, "product", "Product"))
 
             args = dict(
                 trigger_type="single",
@@ -89,7 +84,7 @@ def place_gtts_single(intents: Iterable[Any], kite) -> pd.DataFrame:
                     "quantity": qty,
                     "price": limit_price,
                     "order_type": "LIMIT",
-                    "product": "CNC",  # GTT legs are CNC by design
+                    "product": product,   # NRML
                 }],
             )
 
@@ -103,6 +98,7 @@ def place_gtts_single(intents: Iterable[Any], kite) -> pd.DataFrame:
                 "trigger_price": trigger_price,
                 "limit_price": limit_price,
                 "last_price": last_price,
+                "product": product,
                 "ok": True,
                 "gtt_id": gtt_id,
             })
@@ -121,16 +117,6 @@ def place_gtts_single(intents: Iterable[Any], kite) -> pd.DataFrame:
 
 
 def place_gtts_oco(intents: Iterable[Any], kite) -> pd.DataFrame:
-    """
-    Create OCO (two-leg) GTTs.
-    Expected on each intent:
-      - symbol, exchange, txn_type (BUY/SELL), qty
-      - gtt == 'YES', gtt_type == 'OCO'
-      - trigger_price_1, limit_price_1, trigger_price_2, limit_price_2
-      - last_price optional (we try kite.ltp if missing)
-
-    Returns DataFrame with per-row results.
-    """
     results: List[Dict[str, Any]] = []
 
     for idx, it in enumerate(intents):
@@ -161,7 +147,6 @@ def place_gtts_oco(intents: Iterable[Any], kite) -> pd.DataFrame:
             if tp1 == tp2:
                 raise ValueError("OCO trigger prices must differ")
 
-            # Resolve last_price for trigger conditioning; safe fallback to 0.0
             last_price = _get_attr(it, "last_price", "LastPrice")
             if last_price is None:
                 try:
@@ -169,6 +154,8 @@ def place_gtts_oco(intents: Iterable[Any], kite) -> pd.DataFrame:
                     last_price = float(ltp[f"{exchange}:{symbol}"]["last_price"])
                 except Exception:
                     last_price = 0.0
+
+            product = _resolve_gtt_product(exchange, _get_attr(it, "product", "Product"))
 
             args = dict(
                 trigger_type="two-leg",
@@ -182,14 +169,14 @@ def place_gtts_oco(intents: Iterable[Any], kite) -> pd.DataFrame:
                         "quantity": qty,
                         "price": lp1,
                         "order_type": "LIMIT",
-                        "product": "CNC",  # GTT legs are CNC by design
+                        "product": product,  # NRML
                     },
                     {
                         "transaction_type": txn,
                         "quantity": qty,
                         "price": lp2,
                         "order_type": "LIMIT",
-                        "product": "CNC",
+                        "product": product,  # NRML
                     },
                 ],
             )
@@ -206,6 +193,7 @@ def place_gtts_oco(intents: Iterable[Any], kite) -> pd.DataFrame:
                 "trigger_price_2": tp2,
                 "limit_price_2": lp2,
                 "last_price": last_price,
+                "product": product,
                 "ok": True,
                 "gtt_id": gtt_id,
             })

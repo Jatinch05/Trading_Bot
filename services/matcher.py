@@ -1,65 +1,38 @@
-# services/matcher.py
-from __future__ import annotations
+# services/matcher.py — SELL auto-cap helpers (NRML-only)
 
+from __future__ import annotations
 from typing import Dict, Tuple, List, Iterable
 import pandas as pd
 
 from models import OrderIntent
 
+
 Key = Tuple[str, str, str]  # (exchange, symbol, product)
-
-
-def _key(exchange: str, symbol: str, product: str | None) -> Key:
-    return (str(exchange).upper(), str(symbol).upper(), (product or "CNC").upper())
-
-
-def _safe_int(v, default=0) -> int:
-    try:
-        return int(v)
-    except Exception:
-        return default
 
 
 def fetch_sellable_quantities(kite) -> Dict[Key, int]:
     """
-    Build a map of sellable quantity per (exchange, symbol, product).
-    - CNC holdings contribute to (exchange, symbol, CNC)
-    - Today's intraday/day positions contribute available = max(buys - sells, 0) on that product
-    Returns: dict[(EXCHANGE, SYMBOL, PRODUCT)] -> int
+    Build available SELL quantities per (exchange, symbol, product).
+    NRML-only engine: we consider only NRML positions (net > 0).
     """
     sellable: Dict[Key, int] = {}
 
-    # 1) CNC holdings
-    try:
-        for h in kite.holdings():
-            exch = str(h.get("exchange") or h.get("exchange_type") or "NSE").upper()
-            sym = str(h.get("tradingsymbol") or h.get("trading_symbol")).upper()
-            qty = _safe_int(h.get("quantity") or h.get("t1_quantity") or 0)
-            if qty > 0:
-                k = _key(exch, sym, "CNC")
-                sellable[k] = sellable.get(k, 0) + qty
-    except Exception:
-        # Ignore holdings failure; continue with positions
-        pass
-
-    # 2) Day positions: available = max(buys - sells, 0)
     try:
         pos = kite.positions() or {}
-        day_positions = pos.get("day") or pos.get("Day") or []
-        for p in day_positions:
-            exch = str(p.get("exchange") or "NSE").upper()
-            sym = str(p.get("tradingsymbol")).upper()
-            product = str(p.get("product") or "MIS").upper()
-
-            # Prefer explicit day buy/sell numbers when available
-            buys = _safe_int(p.get("buy_quantity") or p.get("day_buy_quantity") or 0)
-            sells = _safe_int(p.get("sell_quantity") or p.get("day_sell_quantity") or 0)
-            avail = max(buys - sells, 0)
-            if avail > 0:
-                k = _key(exch, sym, product)
-                sellable[k] = sellable.get(k, 0) + avail
+        # Prefer 'net' which reflects current net positions
+        for p in pos.get("net") or []:
+            exch = str(p.get("exchange") or "").upper()
+            sym  = str(p.get("tradingsymbol") or "").upper()
+            prod = str(p.get("product") or "").upper()
+            if prod != "NRML":
+                continue
+            netq = int(p.get("quantity") or p.get("net_quantity") or 0)
+            if netq > 0:
+                key = (exch, sym, prod)
+                sellable[key] = sellable.get(key, 0) + netq
     except Exception:
-        pass
+        # On failure, return empty sellable; caller should handle gracefully
+        return {}
 
     return sellable
 
@@ -68,53 +41,63 @@ def cap_sell_intents_by_sellable(
     intents: Iterable[OrderIntent],
     sellable: Dict[Key, int],
     strict_product: bool = True,
-) -> tuple[list[OrderIntent], pd.DataFrame]:
+) -> Tuple[List[OrderIntent], pd.DataFrame]:
     """
-    For each SELL intent, cap quantity to what's sellable:
-      - key = (exchange, symbol, product) if strict_product else (exchange, symbol, "CNC" if product==CNC else product)
-    Returns:
-      - adjusted intents (SELL rows capped; zero-qty SELLs dropped)
-      - report dataframe with requested/capped/available per row
+    For SELL regular orders, cap quantity to what's available in `sellable`.
+    Returns (adjusted_intents, report_df).
+    If strict_product=False, we aggregate availability across all products for that (exchange,symbol).
+    With NRML-only engine, both modes behave the same, but we keep the switch for future extensibility.
     """
     adjusted: List[OrderIntent] = []
-    report_rows: List[dict] = []
+    report_rows: List[Dict[str, object]] = []
+
+    # Build relaxed index if needed
+    by_ex_sym: Dict[Tuple[str, str], int] = {}
+    if not strict_product:
+        for (ex, sym, prod), qty in sellable.items():
+            by_ex_sym[(ex, sym)] = by_ex_sym.get((ex, sym), 0) + qty
 
     for it in intents:
+        if (it.gtt or "").upper() == "YES":
+            # Only regular orders are matched/capped; GTT fires later at broker
+            adjusted.append(it)
+            continue
+
         if it.txn_type != "SELL":
             adjusted.append(it)
             continue
 
-        prod = (it.product or "CNC").upper()
-        k = _key(it.exchange, it.symbol, prod)
+        key = (it.exchange, it.symbol, it.product or "NRML")
+        avail = 0
+        if strict_product:
+            avail = int(sellable.get(key, 0))
+        else:
+            avail = int(by_ex_sym.get((it.exchange, it.symbol), 0))
 
-        # Optionally relax product matching: e.g., allow MIS SELL to consume CNC if prod mismatch not desired
-        if not strict_product and prod != "CNC" and k not in sellable:
-            k = _key(it.exchange, it.symbol, "CNC")
-
-        available = sellable.get(k, 0)
         req = int(it.qty)
-        cap = min(req, available)
+        place_qty = min(req, max(avail, 0))
 
         report_rows.append({
-            "symbol": it.symbol,
             "exchange": it.exchange,
-            "product": prod,
+            "symbol": it.symbol,
+            "product": it.product or "NRML",
             "requested_qty": req,
-            "available_qty": available,
-            "placed_qty": cap,
-            "shortfall": max(req - cap, 0),
+            "available_qty": avail,
+            "placed_qty": place_qty,
+            "shortfall": max(req - place_qty, 0),
         })
 
-        if cap <= 0:
-            # Skip placement entirely for this SELL
+        if place_qty <= 0:
+            # skip placing this SELL
             continue
 
-        # Create a capped clone
-        capped = it.model_copy(update={"qty": cap})
-        adjusted.append(capped)
+        adjusted.append(it.model_copy(update={"qty": place_qty}))
 
-        # Decrement pool (FIFO by intent order)
-        sellable[k] = max(available - cap, 0)
+        # Decrement pool
+        if strict_product:
+            sellable[key] = max(avail - place_qty, 0)
+        else:
+            by_ex_sym[(it.exchange, it.symbol)] = max(avail - place_qty, 0)
 
-    report = pd.DataFrame(report_rows)
-    return adjusted, report
+    report_df = pd.DataFrame(report_rows)
+    return adjusted, report_df
