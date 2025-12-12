@@ -1,101 +1,241 @@
-from __future__ import annotations
-from typing import Iterable, Any, Dict, List
+# services/orders/gtt.py — robust SINGLE + OCO GTT creation with full NRML & WS-linking
+
+from typing import List, Dict, Any
 import pandas as pd
 
-def _get(obj: Any, *names, default=None):
-    for n in names:
-        if isinstance(obj, dict) and n in obj: return obj[n]
-        if hasattr(obj, n): return getattr(obj, n)
-    return default
+try:
+    from kiteconnect import KiteConnect
+except Exception:
+    KiteConnect = None
 
-def _f(x, name): 
-    try: return float(x)
-    except: raise ValueError(f"{name} must be numeric")
-def _i(x, name):
-    try: return int(float(x))
-    except: raise ValueError(f"{name} must be int")
+from models import OrderIntent
+from services.ws import linker as ws_linker
+from services.ws import gtt_watcher
 
-def place_gtts_single(intents: Iterable[Any], kite) -> pd.DataFrame:
-    res: List[Dict[str, Any]] = []
-    for idx, it in enumerate(intents):
-        row = {"idx": idx}
+
+# ------------------------------------------------------
+# Helpers
+# ------------------------------------------------------
+
+def _normalize_group(tag: str | None) -> str | None:
+    """Extract clean group from 'link:n' tags."""
+    if not tag:
+        return None
+    t = str(tag).strip().lower()
+    if t.startswith("link:"):
+        return t.split(":", 1)[1].strip()
+    return None
+
+
+def _build_ltp_map(kite, intents: List[OrderIntent]) -> Dict[str, float]:
+    keys = sorted({f"{i.exchange}:{i.symbol}" for i in intents})
+    if not keys:
+        return {}
+    try:
+        data = kite.ltp(keys)
+        out = {}
+        for k in keys:
+            lp = (data.get(k) or {}).get("last_price")
+            out[k] = float(lp) if lp is not None else None
+        return out
+    except Exception:
+        # fallback: unknown LTP (try individual fetch later)
+        return {k: None for k in keys}
+
+
+# ------------------------------------------------------
+# GTT SINGLE
+# ------------------------------------------------------
+
+def place_gtts_single(intents: List[OrderIntent], kite) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+
+    singles = [
+        i for i in intents
+        if str(getattr(i, "gtt", "")).upper() == "YES"
+        and str(getattr(i, "gtt_type", "")).upper() == "SINGLE"
+    ]
+    if not singles:
+        return pd.DataFrame(rows)
+
+    ltp_map = _build_ltp_map(kite, singles)
+
+    for i in singles:
+        key = f"{i.exchange}:{i.symbol}"
+        ltp = ltp_map.get(key)
+        status, msg, trig_id = "OK", "", None
+
+        # Validate required fields
+        if getattr(i, "gtt_trigger", None) is None or getattr(i, "gtt_limit", None) is None:
+            rows.append({
+                "kind": "GTT_SINGLE",
+                "exchange": i.exchange,
+                "symbol": i.symbol,
+                "side": str(i.txn_type).upper(),
+                "qty": int(i.qty),
+                "trigger": None,
+                "limit": None,
+                "trigger_id": None,
+                "status": "ERROR",
+                "message": "Missing GTT trigger/limit",
+            })
+            continue
+
         try:
-            if str(_get(it, "gtt", "GTT","")).upper() != "YES" or str(_get(it,"gtt_type","GTTType","SINGLE")).upper() != "SINGLE":
-                continue
-            symbol = str(_get(it, "symbol","tradingsymbol")).upper()
-            exchange = str(_get(it, "exchange")).upper()
-            txn = str(_get(it, "txn_type","transaction_type")).upper()
-            qty = _i(_get(it, "qty","quantity"), "qty")
-            tp = _f(_get(it, "trigger_price","TriggerPrice"), "trigger_price")
-            lp = _f(_get(it, "limit_price","LimitPrice"), "limit_price")
-            ltp = 0.0
-            try:
-                data = kite.ltp([f"{exchange}:{symbol}"])
-                ltp = float(data[f"{exchange}:{symbol}"]["last_price"])
-            except Exception:
-                pass
-            args = dict(
-                trigger_type="single",
-                tradingsymbol=symbol,
-                exchange=exchange,
-                trigger_values=[tp],
-                last_price=ltp,
-                orders=[{
-                    "transaction_type": txn,
-                    "quantity": qty,
-                    "price": lp,
+            # Ensure we have LTP
+            if ltp is None:
+                data = kite.ltp([key])
+                ltp = float(data[key]["last_price"])
+
+            # GTT SINGLE order child
+            orders = [{
+                "transaction_type": str(i.txn_type).upper(),
+                "quantity": int(i.qty),
+                "order_type": "LIMIT",
+                "price": float(i.gtt_limit),
+                "product": "NRML",
+            }]
+
+            resp = kite.place_gtt(
+                trigger_type=getattr(KiteConnect, "GTT_TYPE_SINGLE", "single"),
+                tradingsymbol=i.symbol,
+                exchange=i.exchange,
+                trigger_values=[float(i.gtt_trigger)],
+                last_price=float(ltp),
+                orders=orders,
+            )
+
+            trig_id = resp.get("trigger_id")
+
+            # WS-based linking for BUY GTT
+            if str(i.txn_type).upper() == "BUY":
+                group = _normalize_group(getattr(i, "tag", None))
+                if group and trig_id:
+                    ws_linker.register_gtt_trigger(trig_id, i.exchange, i.symbol, f"link:{group}")
+                    gtt_watcher.add_trigger(trig_id)
+
+        except Exception as e:
+            status, msg = "ERROR", str(e)
+
+        rows.append({
+            "kind": "GTT_SINGLE",
+            "exchange": i.exchange,
+            "symbol": i.symbol,
+            "side": str(i.txn_type).upper(),
+            "qty": int(i.qty),
+            "trigger": float(i.gtt_trigger),
+            "limit": float(i.gtt_limit),
+            "trigger_id": trig_id,
+            "status": status,
+            "message": msg,
+        })
+
+    return pd.DataFrame(rows)
+
+
+# ------------------------------------------------------
+# GTT OCO
+# ------------------------------------------------------
+
+def place_gtts_oco(intents: List[OrderIntent], kite) -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+
+    ocos = [
+        i for i in intents
+        if str(getattr(i, "gtt", "")).upper() == "YES"
+        and str(getattr(i, "gtt_type", "")).upper() == "OCO"
+    ]
+    if not ocos:
+        return pd.DataFrame(rows)
+
+    ltp_map = _build_ltp_map(kite, ocos)
+
+    for i in ocos:
+        key = f"{i.exchange}:{i.symbol}"
+        ltp = ltp_map.get(key)
+        status, msg, trig_id = "OK", "", None
+
+        # Validate necessary fields
+        if (
+            getattr(i, "gtt_trigger_1", None) is None
+            or getattr(i, "gtt_trigger_2", None) is None
+            or getattr(i, "gtt_limit_1", None) is None
+            or getattr(i, "gtt_limit_2", None) is None
+        ):
+            rows.append({
+                "kind": "GTT_OCO",
+                "exchange": i.exchange,
+                "symbol": i.symbol,
+                "side": str(i.txn_type).upper(),
+                "qty": int(i.qty),
+                "trigger_1": None,
+                "limit_1": None,
+                "trigger_2": None,
+                "limit_2": None,
+                "trigger_id": None,
+                "status": "ERROR",
+                "message": "Missing OCO triggers/limits",
+            })
+            continue
+
+        try:
+            # Ensure LTP
+            if ltp is None:
+                data = kite.ltp([key])
+                ltp = float(data[key]["last_price"])
+
+            # Two child orders
+            orders = [
+                {
+                    "transaction_type": str(i.txn_type).upper(),
+                    "quantity": int(i.qty),
                     "order_type": "LIMIT",
+                    "price": float(i.gtt_limit_1),
                     "product": "NRML",
-                }],
-            )
-            gid = kite.place_gtt(**args)
-            row.update(symbol=symbol, exchange=exchange, txn=txn, qty=qty, gtt_type="SINGLE",
-                       trigger_price=tp, limit_price=lp, last_price=ltp, product="NRML", ok=True, gtt_id=gid)
-        except Exception as e:
-            row.update(symbol=_get(it,"symbol","tradingsymbol",default=None),
-                       exchange=_get(it,"exchange",default=None), gtt_type="SINGLE", ok=False, error=str(e))
-        res.append(row)
-    return pd.DataFrame(res)
+                },
+                {
+                    "transaction_type": str(i.txn_type).upper(),
+                    "quantity": int(i.qty),
+                    "order_type": "LIMIT",
+                    "price": float(i.gtt_limit_2),
+                    "product": "NRML",
+                },
+            ]
 
-def place_gtts_oco(intents: Iterable[Any], kite) -> pd.DataFrame:
-    res: List[Dict[str, Any]] = []
-    for idx, it in enumerate(intents):
-        row = {"idx": idx}
-        try:
-            if str(_get(it, "gtt","GTT","")).upper() != "YES" or str(_get(it,"gtt_type","GTTType","")).upper() != "OCO":
-                continue
-            symbol = str(_get(it, "symbol","tradingsymbol")).upper()
-            exchange = str(_get(it, "exchange")).upper()
-            txn = str(_get(it, "txn_type","transaction_type")).upper()
-            qty = _i(_get(it, "qty","quantity"), "qty")
-            tp1 = _f(_get(it, "trigger_price_1","TriggerPrice1"), "trigger_price_1")
-            lp1 = _f(_get(it, "limit_price_1","LimitPrice1"), "limit_price_1")
-            tp2 = _f(_get(it, "trigger_price_2","TriggerPrice2"), "trigger_price_2")
-            lp2 = _f(_get(it, "limit_price_2","LimitPrice2"), "limit_price_2")
-            if tp1 == tp2: raise ValueError("OCO trigger prices must differ")
-            ltp = 0.0
-            try:
-                data = kite.ltp([f"{exchange}:{symbol}"])
-                ltp = float(data[f"{exchange}:{symbol}"]["last_price"])
-            except Exception:
-                pass
-            args = dict(
-                trigger_type="two-leg",
-                tradingsymbol=symbol,
-                exchange=exchange,
-                trigger_values=[tp1, tp2],
-                last_price=ltp,
-                orders=[
-                    {"transaction_type": txn, "quantity": qty, "price": lp1, "order_type": "LIMIT", "product": "NRML"},
-                    {"transaction_type": txn, "quantity": qty, "price": lp2, "order_type": "LIMIT", "product": "NRML"},
-                ],
+            resp = kite.place_gtt(
+                trigger_type=getattr(KiteConnect, "GTT_TYPE_OCO", "oco"),
+                tradingsymbol=i.symbol,
+                exchange=i.exchange,
+                trigger_values=[float(i.gtt_trigger_1), float(i.gtt_trigger_2)],
+                last_price=float(ltp),
+                orders=orders,
             )
-            gid = kite.place_gtt(**args)
-            row.update(symbol=symbol, exchange=exchange, txn=txn, qty=qty, gtt_type="OCO",
-                       trigger_price_1=tp1, limit_price_1=lp1, trigger_price_2=tp2, limit_price_2=lp2,
-                       last_price=ltp, product="NRML", ok=True, gtt_id=gid)
+
+            trig_id = resp.get("trigger_id")
+
+            # BUY-side GTT linking
+            if str(i.txn_type).upper() == "BUY":
+                group = _normalize_group(getattr(i, "tag", None))
+                if group and trig_id:
+                    ws_linker.register_gtt_trigger(trig_id, i.exchange, i.symbol, f"link:{group}")
+                    gtt_watcher.add_trigger(trig_id)
+
         except Exception as e:
-            row.update(symbol=_get(it,"symbol","tradingsymbol",default=None),
-                       exchange=_get(it,"exchange",default=None), gtt_type="OCO", ok=False, error=str(e))
-        res.append(row)
-    return pd.DataFrame(res)
+            status, msg = "ERROR", str(e)
+
+        rows.append({
+            "kind": "GTT_OCO",
+            "exchange": i.exchange,
+            "symbol": i.symbol,
+            "side": str(i.txn_type).upper(),
+            "qty": int(i.qty),
+            "trigger_1": float(i.gtt_trigger_1),
+            "limit_1": float(i.gtt_limit_1),
+            "trigger_2": float(i.gtt_trigger_2),
+            "limit_2": float(i.gtt_limit_2),
+            "trigger_id": trig_id,
+            "status": status,
+            "message": msg,
+        })
+
+    return pd.DataFrame(rows)

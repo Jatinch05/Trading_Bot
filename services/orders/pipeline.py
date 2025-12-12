@@ -1,118 +1,114 @@
+# services/orders/pipeline.py
+"""
+Pipeline:
+▪ Receives a list of OrderIntent
+▪ Splits BUY vs SELL
+▪ BUY:
+    - Live → place_order() or place_gtt()
+    - Dry-run → produce synthetic order_id & register BUY in linker
+▪ SELL:
+    - If link_sells_via_ws=True & tag=link:<group> → deferred SELL (queued)
+    - Else → immediate SELL order
+"""
+
 from __future__ import annotations
-import streamlit as st
-import pandas as pd
-from typing import List
+from typing import List, Dict, Any
+
 from models import OrderIntent
-from services.orders.splitter import split_regular_gtt
-from services.orders.placement import place_orders
-from services.orders.gtt import place_gtts_single, place_gtts_oco
-from services.orders.matcher import fetch_sellable_quantities, filter_sell_intents_exact
-from services.results import dataframe_to_excel_download
 from services.ws import linker as ws_linker
+from services.orders.placement import place_orders
+
+
+def _intent_to_linker_dict(it: OrderIntent) -> Dict[str, Any]:
+    """
+    Convert OrderIntent → dict format expected by ws_linker.defer_sells().
+    """
+    kind = "regular"
+    if it.gtt == "YES" and it.gtt_type == "SINGLE":
+        kind = "gtt-single"
+    elif it.gtt == "YES" and it.gtt_type == "OCO":
+        kind = "gtt-oco"
+
+    return {
+        "exchange": it.exchange,
+        "symbol": it.symbol,
+        "quantity": it.qty,
+        "tag": it.tag,
+        "kind": kind,
+        "meta": {
+            "price": it.price,
+            "trigger_price": it.trigger_price,
+            "gtt_trigger": it.gtt_trigger,
+            "gtt_limit": it.gtt_limit,
+            "gtt_trigger_1": it.gtt_trigger_1,
+            "gtt_limit_1": it.gtt_limit_1,
+            "gtt_trigger_2": it.gtt_trigger_2,
+            "gtt_limit_2": it.gtt_limit_2,
+        },
+    }
+
 
 def execute_bundle(
     intents: List[OrderIntent],
-    kite,
-    live: bool,
-    enforce_exact_sell: bool,
-    link_sells_via_ws: bool = False,
-    api_key: str | None = None,
-    access_token: str | None = None,
-):
+    kite=None,
+    live: bool = True,
+    link_sells_via_ws: bool = True,
+) -> List[Dict[str, Any]]:
     """
-    - If link_sells_via_ws=True (and live), SELLs are deferred to the WS linker.
-      Only BUY orders (regular + GTT) are placed now.
-    - Else, normal flow with optional exact-match SELL enforcement.
+    Main execution entrypoint.
+    Returns list of dict results (regular, gtt, deferred sells).
     """
-    if live and link_sells_via_ws:
-        # Split BUY vs SELL first
-        buys = [i for i in intents if i.txn_type == "BUY"]
-        sells = [i for i in intents if i.txn_type == "SELL"]
 
-        # Start WS linker if needed (configure with client + placement functions)
-        if not ws_linker.is_running():
-            if not api_key or not access_token:
-                st.error("WebSocket linker needs api_key and access_token.")
-                return
-            ws_linker.configure(
-                kite_client=kite,
-                place_regular_fn=place_orders,
-                place_gtt_single_fn=place_gtts_single,
-                place_gtt_oco_fn=place_gtts_oco,
-            )
-            ws_linker.start(api_key=api_key, access_token=access_token)
-            st.success("Buy→Sell WebSocket linker started.")
+    results: List[Dict[str, Any]] = []
 
-        # Queue SELLs (both regular and GTT)
-        queued = ws_linker.defer_sells(sells)
-        st.info(f"Deferred SELL intents queued: {queued}")
+    # Split BUY vs SELL
+    buys = []
+    sells = []
 
-        # Place only BUYs now
-        regular_buys, gtt_buys = split_regular_gtt(buys)
-
-        reg_df = pd.DataFrame()
-        if regular_buys:
-            with st.status("Placing BUY regular orders…", expanded=True) as s:
-                reg_df = place_orders(regular_buys, kite=kite, live=True)
-                s.update(state="complete")
-        st.subheader("Results — BUY Regular")
-        if not reg_df.empty:
-            st.dataframe(reg_df, use_container_width=True)
-            data, fname = dataframe_to_excel_download(reg_df)
-            st.download_button("Download results_buy_regular.xlsx", data=data, file_name=fname.replace("results", "results_buy_regular"), use_container_width=True)
+    for it in intents:
+        if it.txn_type.upper() == "BUY":
+            buys.append(it)
         else:
-            st.info("No BUY regular orders to place.")
+            sells.append(it)
 
-        gtt_single_df = pd.DataFrame()
-        gtt_oco_df = pd.DataFrame()
-        if gtt_buys:
-            with st.status("Creating BUY GTTs…", expanded=True) as s2:
-                gtt_single_df = place_gtts_single(gtt_buys, kite=kite)
-                gtt_oco_df = place_gtts_oco(gtt_buys, kite=kite)
-                s2.update(state="complete")
+    # -----------------------------
+    #  SELL path
+    # -----------------------------
+    deferred_sells = []
+    immediate_sells = []
 
-        st.subheader("Results — BUY GTT (Single)")
-        st.dataframe(gtt_single_df, use_container_width=True) if not gtt_single_df.empty else st.info("No BUY SINGLE GTTs.")
+    for it in sells:
+        if link_sells_via_ws and it.tag and it.tag.startswith("link:"):
+            # group-linked SELL → DEFER
+            deferred_sells.append(it)
+        else:
+            immediate_sells.append(it)
 
-        st.subheader("Results — BUY GTT (OCO)")
-        st.dataframe(gtt_oco_df, use_container_width=True) if not gtt_oco_df.empty else st.info("No BUY OCO GTTs.")
+    # -----------------------------
+    #  Execute BUYs + immediate SELLs
+    # -----------------------------
+    if buys or immediate_sells:
+        combined = buys + immediate_sells
+        df = place_orders(combined, kite=kite, live=live)
 
-        st.warning("SELLs are deferred and will be fired automatically when matching BUY fills accumulate via WebSocket.")
-        return
+        # convert DataFrame to list of dict
+        for _, row in df.iterrows():
+            results.append(row.to_dict())
 
-    # ---- Normal path (no WS linker): optional exact-match SELL enforcement ----
-    if live and enforce_exact_sell:
-        pool = fetch_sellable_quantities(kite)
-        intents, report = filter_sell_intents_exact(intents, pool)
-        st.subheader("Sell Exact-Match Report")
-        st.dataframe(report, use_container_width=True) if not report.empty else st.info("No SELL rows in this batch.")
+    # -----------------------------
+    #  Defer group-linked SELLs
+    # -----------------------------
+    if deferred_sells:
+        # Convert OrderIntent objects → dicts for linker
+        payloads = [_intent_to_linker_dict(it) for it in deferred_sells]
 
-    regular_intents, gtt_intents = split_regular_gtt(intents)
+        queue_ids = ws_linker.defer_sells(payloads)
 
-    reg_df = pd.DataFrame()
-    if regular_intents:
-        with st.status("Placing regular orders…", expanded=True) as s:
-            reg_df = place_orders(regular_intents, kite=kite, live=live)
-            s.update(state="complete")
-    st.subheader("Results — Regular Orders")
-    if not reg_df.empty:
-        st.dataframe(reg_df, use_container_width=True)
-        data, fname = dataframe_to_excel_download(reg_df)
-        st.download_button("Download results_regular.xlsx", data=data, file_name=fname, use_container_width=True)
-    else:
-        st.info("No regular orders to place.")
+        for qid in queue_ids:
+            results.append({
+                "kind": "DEFERRED_SELL",
+                "queue_id": qid,
+                "status": "QUEUED",
+            })
 
-    gtt_single_df = pd.DataFrame()
-    gtt_oco_df    = pd.DataFrame()
-    if gtt_intents and live:
-        with st.status("Creating GTTs…", expanded=True) as s2:
-            gtt_single_df = place_gtts_single(gtt_intents, kite=kite)
-            gtt_oco_df = place_gtts_oco(gtt_intents, kite=kite)
-            s2.update(state="complete")
-    elif gtt_intents and not live:
-        st.info("GTT creation is skipped in Dry-run.")
-
-    st.subheader("Results — GTT (Single-leg)")
-    st.dataframe(gtt_single_df, use_container_width=True) if not gtt_single_df.empty else st.info("No SINGLE GTTs to create.")
-    st.subheader("Results — GTT (OCO)")
-    st.dataframe(gtt_oco_df, use_container_width=True) if not gtt_oco_df.empty else st.info("No OCO GTTs to create.")
+    return results
