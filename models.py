@@ -7,77 +7,97 @@ from typing import Optional
 class OrderIntent(BaseModel):
     exchange: str
     symbol: str
-    txn_type: str          # BUY / SELL
+    txn_type: str       # BUY / SELL
     qty: int
 
-    order_type: str        # MARKET / LIMIT / SL / SL-M
-    price: Optional[float] = None
-    trigger_price: Optional[float] = None
+    order_type: str     # MARKET / LIMIT / SL / SL-M
+    price: Optional[float]
+    trigger_price: Optional[float]
 
-    product: str = "NRML"
-    validity: str = "DAY"
-    variety: str = "regular"
+    product: str        # NRML
+    validity: str       # DAY
+    variety: str        # regular
+    disclosed_qty: int = 0
 
-    disclosed_qty: Optional[int] = None
     tag: Optional[str] = None
 
-    # GTT fields (kept, but not inferred)
     gtt: str = "NO"
     gtt_type: Optional[str] = None
+
     gtt_trigger: Optional[float] = None
     gtt_limit: Optional[float] = None
+
     gtt_trigger_1: Optional[float] = None
     gtt_limit_1: Optional[float] = None
+
     gtt_trigger_2: Optional[float] = None
     gtt_limit_2: Optional[float] = None
 
+    # ---------------------------
+    # VALIDATORS
+    # ---------------------------
     @field_validator("tag")
     def validate_tag(cls, v):
-        if not v:
+        if v is None:
             return None
-        v = v.strip().lower()
-        if v == "exit":
+        v = v.strip()
+        if v == "":
+            return None
+        if v.lower() == "exit":
             return "exit"
-        if v.startswith("link:") and v.split(":", 1)[1].strip():
-            return v
-        return None  # revert to permissive behavior
+        if v.lower().startswith("link:"):
+            group = v.split(":", 1)[1].strip()
+            if not group:
+                raise ValueError("tag requires group after 'link:'")
+            return f"link:{group}"
+        raise ValueError("tag must be 'exit' or 'link:<group>'")
 
-    def to_kite_payload(self) -> Optional[dict]:
+    # ---------------------------
+    # PAYLOAD BUILDER
+    # ---------------------------
+    def to_kite_payload(self):
         """
-        REVERTED behavior:
-        - No inference
-        - No hard validation
-        - Let Kite decide
-        - SELL without price may be deferred
+        Build payload ONLY for NON-GTT orders.
+        GTT orders must be placed via place_gtt().
         """
+
+        # 🚫 HARD STOP: GTT never uses place_order
+        if self.gtt == "YES":
+            return None
 
         payload = {
             "exchange": self.exchange,
             "tradingsymbol": self.symbol,
             "transaction_type": self.txn_type,
-            "quantity": int(self.qty),
-            "order_type": self.order_type,
+            "quantity": self.qty,
             "product": self.product,
             "validity": self.validity,
             "variety": self.variety,
         }
 
-        # Optional fields (only if present)
-        if self.price is not None:
-            payload["price"] = self.price
+        if self.order_type == "MARKET":
+            payload["order_type"] = "MARKET"
 
-        if self.trigger_price is not None:
-            payload["trigger_price"] = self.trigger_price
+        elif self.order_type == "LIMIT":
+            payload["order_type"] = "LIMIT"
+            if self.price is None:
+                raise ValueError("LIMIT order requires price")
+            payload["price"] = float(self.price)
 
-        if self.tag:
-            payload["tag"] = self.tag
+        elif self.order_type in ("SL", "SL-M"):
+            payload["order_type"] = self.order_type
+            if self.trigger_price is None:
+                raise ValueError("SL / SL-M requires trigger_price")
+            payload["trigger_price"] = float(self.trigger_price)
+            if self.order_type == "SL":
+                if self.price is None:
+                    raise ValueError("SL order requires price")
+                payload["price"] = float(self.price)
+
+        else:
+            raise ValueError(f"Unsupported order_type: {self.order_type}")
 
         if self.disclosed_qty:
             payload["disclosed_quantity"] = self.disclosed_qty
-
-        # IMPORTANT:
-        # If this is a SELL LIMIT without price → defer (same as before)
-        if self.txn_type == "SELL" and self.order_type == "LIMIT" and self.price is None:
-            return None
 
         return payload
