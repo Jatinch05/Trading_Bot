@@ -20,9 +20,8 @@ class OrderIntent(BaseModel):
     product: str = "NRML"
     validity: str = "DAY"
     variety: str = "regular"
-    disclosed_qty: int = 0
 
-    # allow "exit" and "link:<group>"
+    disclosed_qty: Optional[int] = None
     tag: Optional[str] = None
 
     # ======================================================
@@ -45,62 +44,77 @@ class OrderIntent(BaseModel):
     # ======================================================
     @field_validator("tag")
     def validate_tag(cls, v):
-        """
-        Allowed:
-        - None
-        - "exit"
-        - "link:<group>"
-        """
-        if v is None:
+        if not v:
             return None
-
-        if not isinstance(v, str):
-            return None
-
-        v = v.strip()
-        if v == "":
-            return None
-
-        lo = v.lower()
-
-        if lo == "exit":
+        v = v.strip().lower()
+        if v == "exit":
             return "exit"
-
-        if lo.startswith("link:"):
-            group = lo.split(":", 1)[1].strip()
-            if not group:
-                raise ValueError("tag requires group after 'link:'")
-            return f"link:{group}"
-
+        if v.startswith("link:") and v.split(":", 1)[1].strip():
+            return v
         raise ValueError("tag must be 'exit' or 'link:<group>'")
 
     # ======================================================
-    # Kite payload builder (CRITICAL)
+    # Kite payload builder (HARDENED)
     # ======================================================
     def to_kite_payload(self) -> dict:
-        """
-        Convert this intent into a KiteConnect-compatible payload
-        for place_order().
-        """
         payload = {
             "exchange": self.exchange,
             "tradingsymbol": self.symbol,
             "transaction_type": self.txn_type,
-            "quantity": self.qty,
+            "quantity": int(self.qty),
             "order_type": self.order_type,
             "product": self.product,
             "validity": self.validity,
             "variety": self.variety,
-            "disclosed_quantity": self.disclosed_qty,
         }
 
-        if self.price is not None:
-            payload["price"] = self.price
+        # -------------------------------
+        # Order-type enforcement
+        # -------------------------------
+        if self.order_type == "MARKET":
+            pass  # price / trigger must NOT exist
 
-        if self.trigger_price is not None:
-            payload["trigger_price"] = self.trigger_price
+        elif self.order_type == "LIMIT":
+            if self.price is None:
+                raise ValueError("LIMIT order requires price")
+            payload["price"] = self._round_price(self.price)
 
+        elif self.order_type in ("SL", "SL-M"):
+            if self.trigger_price is None:
+                raise ValueError("SL / SL-M requires trigger_price")
+            payload["trigger_price"] = self._round_price(self.trigger_price)
+            if self.order_type == "SL":
+                if self.price is None:
+                    raise ValueError("SL order requires price")
+                payload["price"] = self._round_price(self.price)
+
+        else:
+            raise ValueError(f"Unsupported order_type: {self.order_type}")
+
+        # -------------------------------
+        # Optional fields
+        # -------------------------------
         if self.tag:
             payload["tag"] = self.tag
 
+        if self.disclosed_qty and self.disclosed_qty > 0:
+            if self.disclosed_qty >= self.qty:
+                raise ValueError("disclosed_qty must be < qty")
+            payload["disclosed_quantity"] = self.disclosed_qty
+
+        # -------------------------------
+        # GTT stripping (CRITICAL)
+        # -------------------------------
+        if self.gtt != "YES":
+            # Ensure NO GTT keys leak to Kite
+            pass
+
         return payload
+
+    # ======================================================
+    # Helpers
+    # ======================================================
+    @staticmethod
+    def _round_price(p: float) -> float:
+        # Safe default tick size
+        return round(p / 0.05) * 0.05

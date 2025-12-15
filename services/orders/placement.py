@@ -10,7 +10,7 @@ def place_orders(kite, intents, linker=None):
         results.append({
             "order_id": order_id,
             "symbol": intent.symbol,
-            "txn": intent.txn_type,
+            "txn_type": intent.txn_type,
             "qty": intent.qty,
         })
 
@@ -19,7 +19,7 @@ def place_orders(kite, intents, linker=None):
                 order_id,
                 intent.exchange,
                 intent.symbol,
-                intent.link,
+                intent.tag,
             )
 
     return results
