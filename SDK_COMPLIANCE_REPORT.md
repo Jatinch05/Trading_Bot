@@ -56,21 +56,16 @@ orders = [
 ]
 ```
 
+**Note:** SDK validation also requires `order_type` field (not mentioned in docstring but enforced at runtime).
+
 ### Updated Code (100% Compliant)
 
-**Before (Non-Compliant):**
+**Before (Too Minimal - Missing order_type):**
 ```python
 orders=[{
-    "exchange": intent.exchange,           # ❌ Not in spec
-    "tradingsymbol": intent.symbol,        # ❌ Not in spec
-    "transaction_type": "BUY",             # ✅
-    "quantity": intent.qty,                # ✅
-    "order_type": "LIMIT",                 # ❌ Not in spec
-    "product": intent.product,             # ❌ Not in spec
-    "price": price,                        # ✅
-    "validity": intent.validity,           # ❌ Not in spec
-    "variety": intent.variety,             # ❌ Not in spec
-    "disclosed_quantity": intent.disclosed_qty,  # ❌ Not in spec
+    "transaction_type": "BUY",    # ✅
+    "quantity": intent.qty,       # ✅
+    "price": price,               # ✅ (Missing order_type caused InputException)
 }]
 ```
 
@@ -79,6 +74,7 @@ orders=[{
 orders=[{
     "transaction_type": "BUY",    # ✅ Required
     "quantity": intent.qty,       # ✅ Required
+    "order_type": "LIMIT",        # ✅ Required (by SDK validation)
     "price": price,               # ✅ Required
 }]
 ```
@@ -89,24 +85,24 @@ orders=[{
 
 ### Files Modified
 1. **services/orders/placement.py**
-   - GTT SINGLE BUY: Line 28-37 ✅
-   - GTT OCO BUY: Line 62-84 ✅
-   - GTT SINGLE SELL: Line 179-189 ✅
-   - GTT OCO SELL: Line 209-231 ✅
+   - GTT SINGLE BUY: Lines 28-40 (added order_type) ✅
+   - GTT OCO BUY: Lines 62-87 (added order_type to both legs) ✅
+   - GTT SINGLE SELL: Lines 180-192 (added order_type) ✅
+   - GTT OCO SELL: Lines 212-241 (added order_type to both legs) ✅
 
 ### Specific Updates
 - **Removed non-standard fields** from GTT orders dict:
   - exchange
   - tradingsymbol
-  - order_type
   - product
   - validity
   - variety
   - disclosed_quantity
 
-- **Kept only official fields:**
+- **Kept only SDK-required fields:**
   - transaction_type (BUY/SELL)
   - quantity (int)
+  - order_type (LIMIT) — **Required by SDK validation**
   - price (float)
 
 ---

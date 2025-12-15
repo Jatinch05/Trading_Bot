@@ -4,10 +4,14 @@ Run this to verify BUY-first, SELL-queue, event-driven release logic
 """
 
 import sys
+import io
 from collections import defaultdict
 from models import OrderIntent
 from services.ws.linker import OrderLinker
 from services.orders.placement import place_orders, place_released_sells
+
+# Force UTF-8 output on Windows
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 
 # ============================================================================

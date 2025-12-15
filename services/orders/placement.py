@@ -33,6 +33,7 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                         orders=[{
                             "transaction_type": "BUY",
                             "quantity": intent.qty,
+                            "order_type": "LIMIT",
                             "price": price,
                         }],
                     )
@@ -65,11 +66,13 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                             {
                                 "transaction_type": "BUY",
                                 "quantity": intent.qty,
+                                "order_type": "LIMIT",
                                 "price": price1,
                             },
                             {
                                 "transaction_type": "BUY",
                                 "quantity": intent.qty,
+                                "order_type": "LIMIT",
                                 "price": price2,
                             },
                         ],
@@ -166,6 +169,7 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
                     orders=[{
                         "transaction_type": "SELL",
                         "quantity": intent.qty,
+                        "order_type": "LIMIT",
                         "price": price,
                     }],
                 )
@@ -194,11 +198,13 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
                         {
                             "transaction_type": "SELL",
                             "quantity": intent.qty,
+                            "order_type": "LIMIT",
                             "price": price1,
                         },
                         {
                             "transaction_type": "SELL",
                             "quantity": intent.qty,
+                            "order_type": "LIMIT",
                             "price": price2,
                         },
                     ],
