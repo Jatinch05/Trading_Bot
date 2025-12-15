@@ -5,19 +5,34 @@ from models import OrderIntent
 
 
 def _resolve_last_price(kite, intent: OrderIntent, fallback: float) -> float:
-    """Derive last_price for place_gtt. API rejects trigger_price == last_price."""
+    """Derive last_price for place_gtt. API rejects trigger_price == last_price.
+
+    Strategy:
+    1) Try live quote LTP.
+    2) If missing or effectively equal to trigger, nudge by a small epsilon away from trigger
+       (BUY nudges up, SELL nudges down).
+    """
+
     last_price = fallback
     quote_key = f"{intent.exchange}:{intent.symbol}"
     try:
         quote = kite.quote(quote_key)
         instrument = quote.get(quote_key, {}) if isinstance(quote, dict) else {}
-        last_price = instrument.get("last_price") or instrument.get("last_traded_price") or fallback
+        candidate = instrument.get("last_price") or instrument.get("last_traded_price")
+        if candidate:
+            last_price = float(candidate)
     except Exception:
         # If quote fails, fall back to provided value
         last_price = fallback
 
-    if last_price == fallback:
-        epsilon = 0.05 if abs(fallback) >= 1 else 0.01
+    # If last_price is missing or too close to trigger, nudge it
+    if last_price is None:
+        last_price = fallback
+
+    diff = abs(last_price - fallback)
+    if diff < 1e-6:
+        # Epsilon: 0.1% of price, minimum 0.05 (or 0.01 for penny stocks)
+        epsilon = max(abs(fallback) * 0.001, 0.05 if abs(fallback) >= 1 else 0.01)
         direction = 1 if intent.txn_type == "BUY" else -1
         last_price = fallback + direction * epsilon
 
