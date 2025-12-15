@@ -74,8 +74,13 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                             "product": intent.product,
                         }],
                     )
-                    # Safe extraction of GTT ID from response
-                    order_id = response.get("id") or response.get("data", {}).get("id")
+                    # Safe extraction of GTT ID from response (supports id/trigger_id/data.id)
+                    order_id = (
+                        response.get("id")
+                        or response.get("trigger_id")
+                        or response.get("data", {}).get("id")
+                        or response.get("data", {}).get("trigger_id")
+                    )
                     if not order_id:
                         raise ValueError(f"GTT placement failed: no ID in response {response}")
                     print(f"[PLACEMENT] GTT placed: {order_id}")
@@ -117,8 +122,13 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                             },
                         ],
                     )
-                    # Safe extraction of GTT ID from response
-                    order_id = response.get("id") or response.get("data", {}).get("id")
+                    # Safe extraction of GTT ID from response (supports id/trigger_id/data.id)
+                    order_id = (
+                        response.get("id")
+                        or response.get("trigger_id")
+                        or response.get("data", {}).get("id")
+                        or response.get("data", {}).get("trigger_id")
+                    )
                     if not order_id:
                         raise ValueError(f"GTT placement failed: no ID in response {response}")
                     results.append({
@@ -215,7 +225,12 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
                         "product": intent.product,
                     }],
                 )
-                gtt_id = response.get("id") or response.get("data", {}).get("id")
+                gtt_id = (
+                    response.get("id")
+                    or response.get("trigger_id")
+                    or response.get("data", {}).get("id")
+                    or response.get("data", {}).get("trigger_id")
+                )
                 if not gtt_id:
                     raise ValueError(f"GTT placement failed: no ID in response {response}")
                 results.append({
@@ -254,7 +269,12 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
                         },
                     ],
                 )
-                gtt_id = response.get("id") or response.get("data", {}).get("id")
+                gtt_id = (
+                    response.get("id")
+                    or response.get("trigger_id")
+                    or response.get("data", {}).get("id")
+                    or response.get("data", {}).get("trigger_id")
+                )
                 if not gtt_id:
                     raise ValueError(f"GTT placement failed: no ID in response {response}")
                 results.append({
