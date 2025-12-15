@@ -35,6 +35,7 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                             "quantity": intent.qty,
                             "order_type": "LIMIT",
                             "price": price,
+                            "product": intent.product,
                         }],
                     )
                     # Safe extraction of GTT ID from response
@@ -68,12 +69,14 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                                 "quantity": intent.qty,
                                 "order_type": "LIMIT",
                                 "price": price1,
+                                "product": intent.product,
                             },
                             {
                                 "transaction_type": "BUY",
                                 "quantity": intent.qty,
                                 "order_type": "LIMIT",
                                 "price": price2,
+                                "product": intent.product,
                             },
                         ],
                     )
@@ -171,6 +174,7 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
                         "quantity": intent.qty,
                         "order_type": "LIMIT",
                         "price": price,
+                        "product": intent.product,
                     }],
                 )
                 gtt_id = response.get("id") or response.get("data", {}).get("id")
@@ -200,12 +204,14 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
                             "quantity": intent.qty,
                             "order_type": "LIMIT",
                             "price": price1,
+                            "product": intent.product,
                         },
                         {
                             "transaction_type": "SELL",
                             "quantity": intent.qty,
                             "order_type": "LIMIT",
                             "price": price2,
+                            "product": intent.product,
                         },
                     ],
                 )
