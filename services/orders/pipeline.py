@@ -50,9 +50,7 @@ def execute_bundle(*, kite, intents, linker=None):
                 oid = place_gtt_single(kite, intent)
             else:
                 oid = place_gtt_oco(kite, intent)
-        else:
-            oid = place_regular_order(kite, intent)
-
+      
         results.append({
             "order_id": oid,
             "symbol": intent.symbol,
