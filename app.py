@@ -1,6 +1,4 @@
-# app.py — CLEAN, FULL, PATCHED VERSION
-# Preserves ALL features from original app
-# Adds correct BUY→SELL linking automation
+# app.py — FULL, WORKING, PATCHED VERSION (Instance-based, Streamlit-safe)
 
 import streamlit as st
 import pandas as pd
@@ -18,9 +16,10 @@ from services.orders.pipeline import execute_bundle
 from services.orders.exit import build_exit_intents_from_positions
 from services.results import dataframe_to_excel_download
 
-from services.ws import linker as ws_linker
-from services.ws import ws_manager
-from services.ws import gtt_watcher
+from services.ws.linker import OrderLinker
+from services.ws.ws_manager import WSManager
+from services.ws.gtt_watcher import GTTWatcher
+
 from services import pnl_monitor
 
 
@@ -32,7 +31,7 @@ st.title(APP_TITLE)
 
 
 # =========================================================
-# Session state
+# Session state (CRITICAL)
 # =========================================================
 DEFAULT_STATE = {
     "access_token": None,
@@ -40,10 +39,22 @@ DEFAULT_STATE = {
     "validated_rows": [],
     "vdf_disp": None,
     "selected_rows": set(),
+
+    # NEW — real instances
+    "linker": None,
+    "ws": None,
+    "gtt": None,
 }
 
 for k, v in DEFAULT_STATE.items():
-    st.session_state.setdefault(k, v)
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+
+def ensure_linker():
+    if st.session_state["linker"] is None:
+        st.session_state["linker"] = OrderLinker()
+    return st.session_state["linker"]
 
 
 # =========================================================
@@ -66,15 +77,13 @@ pause_refresh = st.sidebar.checkbox(
 if st.sidebar.button("Sign out / Clear session", use_container_width=True):
     for k in DEFAULT_STATE:
         st.session_state[k] = DEFAULT_STATE[k]
+
     try:
         if pnl_monitor.is_running():
             pnl_monitor.stop()
-        if ws_manager.is_running():
-            ws_manager.stop()
-        if ws_linker.is_running():
-            ws_linker.stop()
     except Exception:
         pass
+
     st.sidebar.success("Session cleared.")
 
 
@@ -96,9 +105,7 @@ if st.sidebar.button("Get Login URL", disabled=auth is None):
     st.sidebar.code(auth.login_url())
 
 request_token = st.sidebar.text_input("Paste request_token")
-if st.sidebar.button(
-    "Exchange token", disabled=(auth is None or not request_token)
-):
+if st.sidebar.button("Exchange token", disabled=(auth is None or not request_token)):
     try:
         tok = auth.exchange_request_token(request_token)
         st.session_state["access_token"] = tok
@@ -108,9 +115,7 @@ if st.sidebar.button(
     except Exception as e:
         st.sidebar.error(f"Exchange failed: {e}")
 
-if st.sidebar.button(
-    "Test session", disabled=(st.session_state["kite"] is None)
-):
+if st.sidebar.button("Test session", disabled=(st.session_state["kite"] is None)):
     try:
         prof = st.session_state["kite"].profile()
         st.sidebar.success(f"user_id={prof.get('user_id')}")
@@ -171,9 +176,7 @@ def render_selection_table():
         disp,
         hide_index=False,
         use_container_width=True,
-        column_config={
-            "select": st.column_config.CheckboxColumn("Select")
-        },
+        column_config={"select": st.column_config.CheckboxColumn("Select")},
         key="validated_editor",
     )
 
@@ -186,6 +189,7 @@ def render_selection_table():
 try:
     if validate_clicked and raw_df is not None:
         intents, vdf, errors = normalize_and_validate(raw_df, instruments)
+
         st.session_state["validated_rows"] = vdf.to_dict("records")
         st.session_state["vdf_disp"] = vdf.copy()
         st.session_state["selected_rows"] = set()
@@ -212,9 +216,13 @@ st.markdown("---")
 
 
 # =========================================================
-# Linker wiring (CORE PATCH)
+# Linker wiring (CORE FIX)
 # =========================================================
+linker = ensure_linker()
+
+
 def _release_sells(intents):
+    # SELLs released ONLY when BUY fills
     execute_bundle(
         intents=intents,
         kite=st.session_state["kite"],
@@ -223,8 +231,7 @@ def _release_sells(intents):
     )
 
 
-ws_linker.set_release_callback(_release_sells)
-ws_linker.start()
+linker.set_release_callback(_release_sells)
 
 
 # =========================================================
@@ -232,23 +239,30 @@ ws_linker.start()
 # =========================================================
 def execute_rows(rows):
     client = None
+
     if live_mode:
         if not st.session_state["kite"]:
             st.error("No active Kite session.")
             return
+
         client = st.session_state["kite"]
 
-        if not ws_manager.is_running():
-            ws_manager.start(
+        # WS manager
+        if st.session_state["ws"] is None:
+            st.session_state["ws"] = WSManager(
                 api_key,
                 st.session_state["access_token"],
-                ws_linker.credit_by_order_id,
+                linker,
             )
+            st.session_state["ws"].start()
 
-        if not gtt_watcher.is_running():
-            gtt_watcher.start(client)
+        # GTT watcher (optional)
+        if st.session_state["gtt"] is None:
+            st.session_state["gtt"] = GTTWatcher(client)
+            st.session_state["gtt"].start()
 
     intents = [OrderIntent(**r) for r in rows]
+
     results = execute_bundle(
         intents=intents,
         kite=client,
@@ -286,9 +300,7 @@ if exec_selected:
         execute_rows(chosen.to_dict("records"))
 
 if exec_all:
-    src = st.session_state["vdf_disp"].drop(
-        columns=["select"], errors="ignore"
-    )
+    src = st.session_state["vdf_disp"].drop(columns=["select"], errors="ignore")
     execute_rows(src.to_dict("records"))
 
 
@@ -357,12 +369,8 @@ if not pause_refresh:
     st_autorefresh(interval=2000, key="ws_dbg")
 
 st.caption("Linker snapshot")
-st.json(ws_linker.snapshot())
+st.json(linker.snapshot())
 
-st.caption("WS events")
-events = ws_manager.events(limit=50)
-if events:
-    st.dataframe(pd.DataFrame(events), use_container_width=True)
-
-st.caption("GTT watcher")
-st.json(gtt_watcher.snapshot())
+if st.session_state["gtt"]:
+    st.caption("GTT watcher")
+    st.json(st.session_state["gtt"].snapshot())

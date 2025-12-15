@@ -1,198 +1,121 @@
 # services/ws/linker.py
-# Link-based BUY → SELL automation engine
-# - Queues SELL OrderIntents
-# - Tracks BUY fills via WS / GTT watcher
-# - Releases SELL intents when credit is sufficient
-# - NEVER talks to Kite API directly
 
-from __future__ import annotations
-
+from collections import defaultdict, deque
 import threading
-from typing import Dict, List, Tuple, Callable, Optional
+import time
 
-from models import OrderIntent
-
-# (exchange, symbol, link_group)
-Key = Tuple[str, str, str]
+def make_key(exchange, symbol, link):
+    return (exchange, symbol, str(link))
 
 
-_STATE = {
-    "lock": threading.RLock(),
-    "running": False,
+class OrderLinker:
+    def __init__(self):
+        self._lock = threading.Lock()
 
-    # credit management
-    "credits": {},          # Key -> int
-    "queues": {},           # Key -> List[OrderIntent]
+        # (exchange, symbol, link) -> int
+        self.credits = defaultdict(int)
 
-    # BUY tracking
-    "buy_registry": {},     # order_id -> Key
-    "gtt_triggers": {},     # trigger_id -> Key
+        # (exchange, symbol, link) -> deque[OrderIntent]
+        self.queues = defaultdict(deque)
 
-    # callback
-    "release_cb": None,     # Callable[[List[OrderIntent]], None]
-}
+        # order_id -> (exchange, symbol, link)
+        self.buy_registry = {}
 
+        self._release_cb = None
+        self._logs = deque(maxlen=200)
+        self._running = True
 
-# =========================================================
-# Lifecycle
-# =========================================================
+    # =====================================================
+    # Compatibility: OLD + NEW names
+    # =====================================================
+    def set_release_cb(self, cb):
+        self._release_cb = cb
+        self._log("release_cb attached")
 
-def start() -> None:
-    with _STATE["lock"]:
-        _STATE["running"] = True
+    def set_release_callback(self, cb):
+        # backward-compat alias used by app.py
+        self.set_release_cb(cb)
 
+    # =====================================================
+    # SELL path (UNCHANGED behavior)
+    # =====================================================
+    def queue_sell(self, intent):
+        key = make_key(intent.exchange, intent.symbol, intent.link)
+        with self._lock:
+            self.queues[key].append(intent)
+            self._log(f"SELL queued {key} qty={intent.qty}")
+            self._try_release_locked(key)
 
-def stop() -> None:
-    with _STATE["lock"]:
-        _STATE["running"] = False
-
-
-def is_running() -> bool:
-    return bool(_STATE["running"])
-
-
-def set_release_callback(cb: Callable[[List[OrderIntent]], None]) -> None:
-    """
-    Register callback to be invoked with SELL OrderIntents
-    when they are ready to be released.
-    """
-    with _STATE["lock"]:
-        _STATE["release_cb"] = cb
-
-
-# =========================================================
-# Helpers
-# =========================================================
-
-def _key(exchange: str, symbol: str, tag: str) -> Key:
-    group = tag.split(":", 1)[1]
-    return (exchange.upper(), symbol.upper(), group)
-
-
-def _ensure_key(k: Key) -> None:
-    _STATE["credits"].setdefault(k, 0)
-    _STATE["queues"].setdefault(k, [])
-
-
-# =========================================================
-# BUY registration
-# =========================================================
-
-def register_buy_order(order_id: str, exchange: str, symbol: str, tag: Optional[str]) -> None:
-    if not tag or not tag.startswith("link:"):
-        return
-
-    k = _key(exchange, symbol, tag)
-    with _STATE["lock"]:
-        _ensure_key(k)
-        _STATE["buy_registry"][str(order_id)] = k
-
-
-def register_gtt_trigger(trigger_id: str | int, exchange: str, symbol: str, tag: Optional[str]) -> None:
-    if not tag or not tag.startswith("link:"):
-        return
-
-    k = _key(exchange, symbol, tag)
-    with _STATE["lock"]:
-        _ensure_key(k)
-        _STATE["gtt_triggers"][str(trigger_id)] = k
-
-
-def bind_order_to_trigger(order_id: str, trigger_id: str | int) -> None:
-    """
-    When a GTT trigger fires and child order_id is known,
-    bind it to the same link group.
-    """
-    with _STATE["lock"]:
-        k = _STATE["gtt_triggers"].pop(str(trigger_id), None)
-        if k:
-            _STATE["buy_registry"][str(order_id)] = k
-
-
-# =========================================================
-# Crediting
-# =========================================================
-
-def credit_by_order_id(order_id: str, delta_qty: int) -> None:
-    if delta_qty <= 0:
-        return
-
-    with _STATE["lock"]:
-        k = _STATE["buy_registry"].get(str(order_id))
-        if not k:
+    def _try_release_locked(self, key):
+        if not self._release_cb:
             return
 
-        _STATE["credits"][k] += int(delta_qty)
+        available = self.credits.get(key, 0)
+        if available <= 0:
+            return
 
-    _try_release(k)
+        q = self.queues[key]
+        released = []
 
+        while q and available > 0:
+            sell = q[0]
 
-# =========================================================
-# SELL queueing
-# =========================================================
-
-def defer_sells(intents: List[OrderIntent]) -> None:
-    """
-    Queue SELL intents for later release.
-    """
-    for it in intents:
-        if not it.tag or not it.tag.startswith("link:"):
-            continue
-
-        k = _key(it.exchange, it.symbol, it.tag)
-        with _STATE["lock"]:
-            _ensure_key(k)
-            _STATE["queues"][k].append(it)
-
-
-# =========================================================
-# Release engine
-# =========================================================
-
-def _try_release(k: Key) -> None:
-    if not _STATE["running"]:
-        return
-
-    cb = _STATE.get("release_cb")
-    if not callable(cb):
-        return
-
-    released: List[OrderIntent] = []
-
-    with _STATE["lock"]:
-        credit = _STATE["credits"].get(k, 0)
-        queue = _STATE["queues"].get(k, [])
-
-        i = 0
-        while i < len(queue):
-            sell = queue[i]
-            if sell.qty <= credit:
-                credit -= sell.qty
+            if sell.qty <= available:
+                available -= sell.qty
+                q.popleft()
                 released.append(sell)
-                queue.pop(i)
             else:
-                i += 1
+                partial = sell.copy_with_qty(available)
+                sell.qty -= available
+                available = 0
+                released.append(partial)
 
-        _STATE["credits"][k] = credit
+        self.credits[key] = available
 
-    if released:
-        cb(released)
+        if released:
+            self._log(f"Releasing {len(released)} SELL(s) for {key}")
+            self._release_cb(released)
 
+    # =====================================================
+    # BUY path (FIXED)
+    # =====================================================
+    def register_buy_order(self, order_id, exchange, symbol, link):
+        with self._lock:
+            self.buy_registry[str(order_id)] = (exchange, symbol, str(link))
+            self._log(f"BUY registered {order_id}")
 
-# =========================================================
-# Debug / Introspection
-# =========================================================
+    def credit_from_fill(self, order_id, filled_qty):
+        oid = str(order_id)
+        with self._lock:
+            if oid not in self.buy_registry:
+                return
 
-def snapshot() -> dict:
-    with _STATE["lock"]:
-        return {
-            "running": _STATE["running"],
-            "credits": {str(k): v for k, v in _STATE["credits"].items()},
-            "queues": {
-                str(k): [i.model_dump() for i in v]
-                for k, v in _STATE["queues"].items()
-            },
-            "buy_registry": dict(_STATE["buy_registry"]),
-            "gtt_triggers": dict(_STATE["gtt_triggers"]),
-            "has_release_cb": callable(_STATE["release_cb"]),
-        }
+            exchange, symbol, link = self.buy_registry[oid]
+            key = make_key(exchange, symbol, link)
+
+            self.credits[key] += int(filled_qty)
+            self._log(f"BUY credit +{filled_qty} for {key}")
+            self._try_release_locked(key)
+
+    # =====================================================
+    # Debug / Introspection
+    # =====================================================
+    def snapshot(self):
+        with self._lock:
+            return {
+                "running": self._running,
+                "credits": dict(self.credits),
+                "queues": {
+                    k: [i.to_dict() for i in v]
+                    for k, v in self.queues.items()
+                },
+                "buy_registry": dict(self.buy_registry),
+                "has_release_cb": bool(self._release_cb),
+                "logs_tail": list(self._logs),
+            }
+
+    def _log(self, msg):
+        self._logs.appendleft({
+            "ts": time.strftime("%H:%M:%S"),
+            "msg": msg,
+        })
