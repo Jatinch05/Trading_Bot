@@ -4,6 +4,26 @@ from typing import List
 from models import OrderIntent
 
 
+def _resolve_last_price(kite, intent: OrderIntent, fallback: float) -> float:
+    """Derive last_price for place_gtt. API rejects trigger_price == last_price."""
+    last_price = fallback
+    quote_key = f"{intent.exchange}:{intent.symbol}"
+    try:
+        quote = kite.quote(quote_key)
+        instrument = quote.get(quote_key, {}) if isinstance(quote, dict) else {}
+        last_price = instrument.get("last_price") or instrument.get("last_traded_price") or fallback
+    except Exception:
+        # If quote fails, fall back to provided value
+        last_price = fallback
+
+    if last_price == fallback:
+        epsilon = 0.05 if abs(fallback) >= 1 else 0.01
+        direction = 1 if intent.txn_type == "BUY" else -1
+        last_price = fallback + direction * epsilon
+
+    return float(last_price)
+
+
 def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = True):
     """
     Places BUY orders immediately.
@@ -24,12 +44,13 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                     trigger = float(intent.gtt_trigger)
                     price = float(intent.gtt_limit)
                     print(f"[PLACEMENT] GTT SINGLE BUY: {intent.symbol} qty={intent.qty} trigger={trigger} limit={price}")
+                    last_price = _resolve_last_price(kite, intent, trigger)
                     response = kite.place_gtt(
                         trigger_type=kite.GTT_TYPE_SINGLE,
                         tradingsymbol=intent.symbol,
                         exchange=intent.exchange,
                         trigger_values=[trigger],
-                        last_price=trigger,  # Ideally fetch LTP via kite.quote(), but trigger is fallback
+                        last_price=last_price,
                         orders=[{
                             "transaction_type": "BUY",
                             "quantity": intent.qty,
@@ -57,12 +78,13 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                     price1 = float(intent.gtt_limit_1)
                     trig2 = float(intent.gtt_trigger_2)
                     price2 = float(intent.gtt_limit_2)
+                    last_price = _resolve_last_price(kite, intent, trig1)
                     response = kite.place_gtt(
                         trigger_type=kite.GTT_TYPE_OCO,
                         tradingsymbol=intent.symbol,
                         exchange=intent.exchange,
                         trigger_values=[trig1, trig2],
-                        last_price=trig1,  # Ideally fetch LTP via kite.quote(), but trigger is fallback
+                        last_price=last_price,
                         orders=[
                             {
                                 "transaction_type": "BUY",
@@ -163,12 +185,13 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
             if intent.gtt_type == "SINGLE":
                 trigger = float(intent.gtt_trigger)
                 price = float(intent.gtt_limit)
+                last_price = _resolve_last_price(kite, intent, trigger)
                 response = kite.place_gtt(
                     trigger_type=kite.GTT_TYPE_SINGLE,
                     tradingsymbol=intent.symbol,
                     exchange=intent.exchange,
                     trigger_values=[trigger],
-                    last_price=trigger,
+                    last_price=last_price,
                     orders=[{
                         "transaction_type": "SELL",
                         "quantity": intent.qty,
@@ -192,12 +215,13 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
                 price1 = float(intent.gtt_limit_1)
                 trig2 = float(intent.gtt_trigger_2)
                 price2 = float(intent.gtt_limit_2)
+                last_price = _resolve_last_price(kite, intent, trig1)
                 response = kite.place_gtt(
                     trigger_type=kite.GTT_TYPE_OCO,
                     tradingsymbol=intent.symbol,
                     exchange=intent.exchange,
                     trigger_values=[trig1, trig2],
-                    last_price=trig1,
+                    last_price=last_price,
                     orders=[
                         {
                             "transaction_type": "SELL",
