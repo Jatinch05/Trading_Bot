@@ -12,7 +12,7 @@ class OrderLinker:
     def __init__(self):
         self._lock = threading.Lock()
 
-        # (exchange, symbol, link) -> int
+        # (exchange, symbol, link) -> available BUY qty
         self.credits = defaultdict(int)
 
         # (exchange, symbol, link) -> deque[OrderIntent]
@@ -25,20 +25,20 @@ class OrderLinker:
         self._logs = deque(maxlen=200)
         self._running = True
 
-    # =====================================================
-    # Compatibility: OLD + NEW names
-    # =====================================================
+    # -------------------------------
+    # Callback registration
+    # -------------------------------
     def set_release_cb(self, cb):
         self._release_cb = cb
         self._log("release_cb attached")
 
+    # backward compatibility
     def set_release_callback(self, cb):
-        # backward-compat alias used by app.py
         self.set_release_cb(cb)
 
-    # =====================================================
-    # SELL path (UNCHANGED behavior)
-    # =====================================================
+    # -------------------------------
+    # SELL queueing & release
+    # -------------------------------
     def queue_sell(self, intent):
         key = make_key(intent.exchange, intent.symbol, intent.link)
         with self._lock:
@@ -59,7 +59,6 @@ class OrderLinker:
 
         while q and available > 0:
             sell = q[0]
-
             if sell.qty <= available:
                 available -= sell.qty
                 q.popleft()
@@ -76,15 +75,15 @@ class OrderLinker:
             self._log(f"Releasing {len(released)} SELL(s) for {key}")
             self._release_cb(released)
 
-    # =====================================================
-    # BUY path (FIXED)
-    # =====================================================
+    # -------------------------------
+    # BUY registration & credit
+    # -------------------------------
     def register_buy_order(self, order_id, exchange, symbol, link):
         with self._lock:
             self.buy_registry[str(order_id)] = (exchange, symbol, str(link))
             self._log(f"BUY registered {order_id}")
 
-    def credit_from_fill(self, order_id, filled_qty):
+    def credit_from_fill(self, order_id, qty):
         oid = str(order_id)
         with self._lock:
             if oid not in self.buy_registry:
@@ -93,13 +92,13 @@ class OrderLinker:
             exchange, symbol, link = self.buy_registry[oid]
             key = make_key(exchange, symbol, link)
 
-            self.credits[key] += int(filled_qty)
-            self._log(f"BUY credit +{filled_qty} for {key}")
+            self.credits[key] += int(qty)
+            self._log(f"BUY credit +{qty} for {key}")
             self._try_release_locked(key)
 
-    # =====================================================
-    # Debug / Introspection
-    # =====================================================
+    # -------------------------------
+    # Debug
+    # -------------------------------
     def snapshot(self):
         with self._lock:
             return {

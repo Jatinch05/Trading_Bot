@@ -1,43 +1,35 @@
 # services/ws/gtt_watcher.py
 
-import time
 import threading
+import time
 
 class GTTWatcher:
-    """
-    Retained only for observability.
-    SELL release does NOT depend on this.
-    """
     def __init__(self, kite):
         self.kite = kite
         self.running = False
         self.pending = set()
         self.resolved = {}
         self.interval = 2
-        self.thread = None
-
-    def add(self, gtt_id):
-        self.pending.add(str(gtt_id))
+        self._thread = None
 
     def start(self):
         if self.running:
             return
         self.running = True
-        self.thread = threading.Thread(target=self._loop, daemon=True)
-        self.thread.start()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
 
     def stop(self):
         self.running = False
 
     def _loop(self):
         while self.running:
-            self.run_once()
+            self._poll()
             time.sleep(self.interval)
 
-    def run_once(self):
+    def _poll(self):
         try:
-            gtts = self.kite.get_gtts()
-            for gtt in gtts:
+            for gtt in self.kite.get_gtts():
                 gid = str(gtt["id"])
                 if gid in self.pending and gtt["status"] == "triggered":
                     self.pending.remove(gid)

@@ -42,6 +42,5 @@ class WSManager:
 
             if order_id and filled_qty:
                 self.linker.credit_from_fill(order_id, filled_qty)
-
         except Exception:
             pass
