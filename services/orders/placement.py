@@ -4,7 +4,7 @@ from typing import List
 from models import OrderIntent
 
 
-def place_orders(kite, intents: List[OrderIntent], linker=None):
+def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = True):
     """
     Places BUY orders immediately.
     SELL orders:
@@ -16,85 +16,208 @@ def place_orders(kite, intents: List[OrderIntent], linker=None):
 
     for intent in intents:
         # -----------------------------
-        # BUY ORDERS (always normal)
+        # BUY ORDERS (place immediately, normal OR GTT)
         # -----------------------------
         if intent.txn_type == "BUY":
-            payload = intent.to_kite_payload()
-            order_id = kite.place_order(**payload)
-
-            results.append({
-                "order_id": order_id,
-                "symbol": intent.symbol,
-                "txn_type": "BUY",
-                "qty": intent.qty,
-                "status": "placed",
-            })
-
-            # Register BUY with linker if needed
-            if linker and intent.tag and intent.tag.startswith("link:"):
-                linker.register_buy(order_id, intent)
-
+            if intent.gtt == "YES":
+                if intent.gtt_type == "SINGLE":
+                    trigger = float(intent.gtt_trigger)
+                    price = float(intent.gtt_limit)
+                    print(f"[PLACEMENT] GTT SINGLE BUY: {intent.symbol} qty={intent.qty} trigger={trigger} limit={price}")
+                    response = kite.place_gtt(
+                        trigger_type="single",
+                        tradingsymbol=intent.symbol,
+                        exchange=intent.exchange,
+                        trigger_values=[trigger],
+                        last_price=trigger,
+                        orders=[{
+                            "transaction_type": "BUY",
+                            "quantity": intent.qty,
+                            "order_type": "LIMIT",
+                            "product": intent.product,
+                            "price": price,
+                        }],
+                    )
+                    order_id = response["id"]
+                    print(f"[PLACEMENT] GTT placed: {order_id}")
+                    results.append({
+                        "order_id": order_id,
+                        "symbol": intent.symbol,
+                        "txn_type": "BUY",
+                        "qty": intent.qty,
+                        "status": "gtt_placed",
+                        "trigger": trigger,
+                        "limit": price,
+                    })
+                elif intent.gtt_type == "OCO":
+                    trig1 = float(intent.gtt_trigger_1)
+                    price1 = float(intent.gtt_limit_1)
+                    trig2 = float(intent.gtt_trigger_2)
+                    price2 = float(intent.gtt_limit_2)
+                    response = kite.place_gtt(
+                        trigger_type="oco",
+                        tradingsymbol=intent.symbol,
+                        exchange=intent.exchange,
+                        trigger_values=[trig1, trig2],
+                        last_price=trig1,
+                        orders=[
+                            {
+                                "transaction_type": "BUY",
+                                "quantity": intent.qty,
+                                "order_type": "LIMIT",
+                                "product": intent.product,
+                                "price": price1,
+                            },
+                            {
+                                "transaction_type": "BUY",
+                                "quantity": intent.qty,
+                                "order_type": "LIMIT",
+                                "product": intent.product,
+                                "price": price2,
+                            },
+                        ],
+                    )
+                    order_id = response["id"]
+                    results.append({
+                        "order_id": order_id,
+                        "symbol": intent.symbol,
+                        "txn_type": "BUY",
+                        "qty": intent.qty,
+                        "status": "gtt_placed",
+                        "trigger_1": trig1,
+                        "limit_1": price1,
+                        "trigger_2": trig2,
+                        "limit_2": price2,
+                    })
+                else:
+                    raise ValueError(f"Unsupported GTT type for BUY: {intent.gtt_type}")
+                # Register GTT BUY with linker if tagged (not exit)
+                if linker and intent.tag and intent.tag.startswith("link:"):
+                    linker.register_gtt_buy(order_id, intent)
+                    print(f"[LINKER] Registered GTT BUY: {order_id} → {intent.symbol} tag={intent.tag}")
+            else:
+                payload = intent.to_kite_payload()
+                order_id = kite.place_order(**payload)
+                results.append({
+                    "order_id": order_id,
+                    "symbol": intent.symbol,
+                    "txn_type": "BUY",
+                    "qty": intent.qty,
+                    "status": "placed",
+                })
+                # Register normal BUY with linker if tagged (not exit)
+                if linker and intent.tag and intent.tag.startswith("link:"):
+                    linker.register_buy(order_id, intent)
             continue
 
         # -----------------------------
-        # SELL ORDERS — GTT SINGLE
-        # -----------------------------
-        if intent.txn_type == "SELL" and intent.gtt == "YES":
-            # 🚫 ABSOLUTE GUARANTEE: never use place_order
-            if intent.gtt_type != "SINGLE":
-                raise ValueError(f"Unsupported GTT type: {intent.gtt_type}")
-
-            if intent.gtt_trigger is None or intent.gtt_limit is None:
-                raise ValueError("GTT SINGLE requires gtt_trigger and gtt_limit")
-
-            trigger = float(intent.gtt_trigger)
-            price = float(intent.gtt_limit)
-
-            response = kite.place_gtt(
-                trigger_type="single",
-                tradingsymbol=intent.symbol,
-                exchange=intent.exchange,
-                trigger_values=[trigger],
-                last_price=trigger,
-                orders=[{
-                    "transaction_type": "SELL",
-                    "quantity": intent.qty,
-                    "order_type": "LIMIT",
-                    "product": intent.product,
-                    "price": price,
-                }],
-            )
-
-            results.append({
-                "order_id": response["id"],
-                "symbol": intent.symbol,
-                "txn_type": "SELL",
-                "qty": intent.qty,
-                "status": "gtt_placed",
-                "trigger": trigger,
-                "limit": price,
-            })
-
-            continue
-
-        # -----------------------------
-        # SELL ORDERS — NON-GTT
+        # SELL ORDERS — QUEUE IF LINKED; EXIT ORDERS PLACE IMMEDIATELY
         # -----------------------------
         if intent.txn_type == "SELL":
-            if linker and intent.tag and intent.tag.startswith("link:"):
-                linker.queue_sell(intent)
+            # Exit orders bypass queueing
+            if intent.tag == "exit":
+                payload = intent.to_kite_payload()
+                order_id = kite.place_order(**payload)
                 results.append({
-                    "order_id": None,
+                    "order_id": order_id,
                     "symbol": intent.symbol,
                     "txn_type": "SELL",
                     "qty": intent.qty,
-                    "status": "queued",
+                    "status": "placed",
                 })
                 continue
+            
+            # Regular SELLs must have link tag and will be queued
+            if not (linker and intent.tag and intent.tag.startswith("link:")):
+                raise ValueError("SELL orders must have tag=link:<group> and will be queued")
+            linker.queue_sell(intent)
+            print(f"[LINKER] Queued SELL: {intent.symbol} qty={intent.qty} gtt={intent.gtt} gtt_type={intent.gtt_type}")
+            results.append({
+                "order_id": None,
+                "symbol": intent.symbol,
+                "txn_type": "SELL",
+                "qty": intent.qty,
+                "status": "queued",
+                "gtt": intent.gtt,
+                "gtt_type": intent.gtt_type,
+            })
+            continue
 
+        # -----------------------------
+        raise ValueError(f"Unknown txn_type: {intent.txn_type}")
+
+    return results
+
+def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
+    results = []
+    for intent in sells:
+        if intent.txn_type != "SELL":
+            continue
+        if intent.gtt == "YES":
+            if intent.gtt_type == "SINGLE":
+                trigger = float(intent.gtt_trigger)
+                price = float(intent.gtt_limit)
+                response = kite.place_gtt(
+                    trigger_type="single",
+                    tradingsymbol=intent.symbol,
+                    exchange=intent.exchange,
+                    trigger_values=[trigger],
+                    last_price=trigger,
+                    orders=[{
+                        "transaction_type": "SELL",
+                        "quantity": intent.qty,
+                        "order_type": "LIMIT",
+                        "product": intent.product,
+                        "price": price,
+                    }],
+                )
+                results.append({
+                    "order_id": response["id"],
+                    "symbol": intent.symbol,
+                    "txn_type": "SELL",
+                    "qty": intent.qty,
+                    "status": "gtt_placed",
+                })
+            elif intent.gtt_type == "OCO":
+                trig1 = float(intent.gtt_trigger_1)
+                price1 = float(intent.gtt_limit_1)
+                trig2 = float(intent.gtt_trigger_2)
+                price2 = float(intent.gtt_limit_2)
+                response = kite.place_gtt(
+                    trigger_type="oco",
+                    tradingsymbol=intent.symbol,
+                    exchange=intent.exchange,
+                    trigger_values=[trig1, trig2],
+                    last_price=trig1,
+                    orders=[
+                        {
+                            "transaction_type": "SELL",
+                            "quantity": intent.qty,
+                            "order_type": "LIMIT",
+                            "product": intent.product,
+                            "price": price1,
+                        },
+                        {
+                            "transaction_type": "SELL",
+                            "quantity": intent.qty,
+                            "order_type": "LIMIT",
+                            "product": intent.product,
+                            "price": price2,
+                        },
+                    ],
+                )
+                results.append({
+                    "order_id": response["id"],
+                    "symbol": intent.symbol,
+                    "txn_type": "SELL",
+                    "qty": intent.qty,
+                    "status": "gtt_placed",
+                })
+            else:
+                raise ValueError("Unsupported GTT type for SELL")
+        else:
             payload = intent.to_kite_payload()
             order_id = kite.place_order(**payload)
-
             results.append({
                 "order_id": order_id,
                 "symbol": intent.symbol,
@@ -102,9 +225,4 @@ def place_orders(kite, intents: List[OrderIntent], linker=None):
                 "qty": intent.qty,
                 "status": "placed",
             })
-
-            continue
-
-        raise ValueError(f"Unknown txn_type: {intent.txn_type}")
-
     return results

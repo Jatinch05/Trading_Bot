@@ -1,0 +1,12 @@
+# Example Excel Orders for Testing
+# Save this as "test_orders.xlsx" with sheet name "Orders"
+
+symbol,exchange,txn_type,qty,order_type,price,trigger_price,product,validity,variety,disclosed_qty,tag,gtt,gtt_type,gtt_trigger,gtt_limit,gtt_trigger_1,gtt_limit_1,gtt_trigger_2,gtt_limit_2
+NIFTY25JANFUT,NFO,BUY,50,MARKET,,,,,,0,link:group1,NO,,,,,,,
+NIFTY25JANFUT,NFO,SELL,25,LIMIT,23500,,,,,0,link:group1,NO,,,,,,,
+NIFTY25JANFUT,NFO,SELL,25,LIMIT,,,,,,0,link:group1,YES,SINGLE,23600,23550,,,,
+BANKNIFTY25JANFUT,NFO,BUY,30,LIMIT,,,,,,0,link:group2,YES,SINGLE,50000,49950,,,,
+BANKNIFTY25JANFUT,NFO,SELL,30,LIMIT,,,,,,0,link:group2,YES,OCO,,,51000,50950,49000,49050
+FINNIFTY25JANFUT,NFO,BUY,40,SL,22000,21950,,,,0,link:group3,NO,,,,,,,
+FINNIFTY25JANFUT,NFO,SELL,20,LIMIT,22500,,,,,0,link:group3,NO,,,,,,,
+FINNIFTY25JANFUT,NFO,SELL,20,SL,21500,21550,,,,0,link:group3,NO,,,,,,,

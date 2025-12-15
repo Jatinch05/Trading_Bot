@@ -1,6 +1,6 @@
 # services/orders/pipeline.py
 
-from services.orders.placement import place_orders
+from services.orders.placement import place_orders, place_released_sells
 
 
 def execute_bundle(*, intents, kite, linker=None, live=True):
@@ -27,4 +27,13 @@ def execute_bundle(*, intents, kite, linker=None, live=True):
         kite=kite,
         intents=intents,
         linker=linker,
+        live=live,
     )
+
+
+def execute_released_sells(*, sells, kite, live=True):
+    """
+    Place SELL intents that have been released by the linker.
+    This function must NOT re-queue — it only places.
+    """
+    return place_released_sells(kite=kite, sells=sells, live=live)

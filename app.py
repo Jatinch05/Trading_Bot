@@ -227,7 +227,9 @@ def _release_sells(intents):
     client = st.session_state.get("kite")
     if not client:
         return
-    execute_bundle(kite=client, intents=intents, linker=linker)
+    # Place released sells directly; do not re-queue
+    from services.orders.pipeline import execute_released_sells
+    execute_released_sells(kite=client, sells=intents, live=True)
 
 
 linker.set_release_callback(_release_sells)
@@ -256,6 +258,7 @@ def execute_rows(rows):
 
         if st.session_state["gtt"] is None:
             st.session_state["gtt"] = GTTWatcher(client)
+            st.session_state["gtt"].bind_linker(linker)
             st.session_state["gtt"].start()
 
     intents = [OrderIntent(**r) for r in rows]
