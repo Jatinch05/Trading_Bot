@@ -15,6 +15,10 @@ from services.orders.placement import place_orders, place_released_sells
 # ============================================================================
 
 class FakeKite:
+    # GTT Constants matching KiteConnect SDK
+    GTT_TYPE_SINGLE = "single"
+    GTT_TYPE_OCO = "two-leg"
+    
     def __init__(self):
         self.orders = {}
         self.gtts = {}

@@ -31,16 +31,9 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                         trigger_values=[trigger],
                         last_price=trigger,  # Ideally fetch LTP via kite.quote(), but trigger is fallback
                         orders=[{
-                            "exchange": intent.exchange,
-                            "tradingsymbol": intent.symbol,
                             "transaction_type": "BUY",
                             "quantity": intent.qty,
-                            "order_type": "LIMIT",
-                            "product": intent.product,
                             "price": price,
-                            "validity": intent.validity,
-                            "variety": intent.variety,
-                            "disclosed_quantity": intent.disclosed_qty,
                         }],
                     )
                     # Safe extraction of GTT ID from response
@@ -70,28 +63,14 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                         last_price=trig1,  # Ideally fetch LTP via kite.quote(), but trigger is fallback
                         orders=[
                             {
-                                "exchange": intent.exchange,
-                                "tradingsymbol": intent.symbol,
                                 "transaction_type": "BUY",
                                 "quantity": intent.qty,
-                                "order_type": "LIMIT",
-                                "product": intent.product,
                                 "price": price1,
-                                "validity": intent.validity,
-                                "variety": intent.variety,
-                                "disclosed_quantity": intent.disclosed_qty,
                             },
                             {
-                                "exchange": intent.exchange,
-                                "tradingsymbol": intent.symbol,
                                 "transaction_type": "BUY",
                                 "quantity": intent.qty,
-                                "order_type": "LIMIT",
-                                "product": intent.product,
                                 "price": price2,
-                                "validity": intent.validity,
-                                "variety": intent.variety,
-                                "disclosed_quantity": intent.disclosed_qty,
                             },
                         ],
                     )
@@ -185,16 +164,9 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
                     trigger_values=[trigger],
                     last_price=trigger,
                     orders=[{
-                        "exchange": intent.exchange,
-                        "tradingsymbol": intent.symbol,
                         "transaction_type": "SELL",
                         "quantity": intent.qty,
-                        "order_type": "LIMIT",
-                        "product": intent.product,
                         "price": price,
-                        "validity": intent.validity,
-                        "variety": intent.variety,
-                        "disclosed_quantity": intent.disclosed_qty,
                     }],
                 )
                 gtt_id = response.get("id") or response.get("data", {}).get("id")
@@ -220,28 +192,14 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
                     last_price=trig1,
                     orders=[
                         {
-                            "exchange": intent.exchange,
-                            "tradingsymbol": intent.symbol,
                             "transaction_type": "SELL",
                             "quantity": intent.qty,
-                            "order_type": "LIMIT",
-                            "product": intent.product,
                             "price": price1,
-                            "validity": intent.validity,
-                            "variety": intent.variety,
-                            "disclosed_quantity": intent.disclosed_qty,
                         },
                         {
-                            "exchange": intent.exchange,
-                            "tradingsymbol": intent.symbol,
                             "transaction_type": "SELL",
                             "quantity": intent.qty,
-                            "order_type": "LIMIT",
-                            "product": intent.product,
                             "price": price2,
-                            "validity": intent.validity,
-                            "variety": intent.variety,
-                            "disclosed_quantity": intent.disclosed_qty,
                         },
                     ],
                 )
