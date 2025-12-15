@@ -1,4 +1,5 @@
-# app.py — FULL, WORKING, PATCHED VERSION (Instance-based, Streamlit-safe)
+# app.py — FULL, WORKING, PATCHED VERSION (Option A)
+# Clean architecture, instance-based, Streamlit-safe
 
 import streamlit as st
 import pandas as pd
@@ -36,22 +37,22 @@ st.title(APP_TITLE)
 DEFAULT_STATE = {
     "access_token": None,
     "kite": None,
+
     "validated_rows": [],
     "vdf_disp": None,
     "selected_rows": set(),
 
-    # NEW — real instances
+    # runtime objects
     "linker": None,
     "ws": None,
     "gtt": None,
 }
 
 for k, v in DEFAULT_STATE.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+    st.session_state.setdefault(k, v)
 
 
-def ensure_linker():
+def ensure_linker() -> OrderLinker:
     if st.session_state["linker"] is None:
         st.session_state["linker"] = OrderLinker()
     return st.session_state["linker"]
@@ -137,6 +138,7 @@ gtt_trigger_1, gtt_limit_1, gtt_trigger_2, gtt_limit_2"""
 
 file = st.file_uploader("Upload Excel", type=["xlsx"])
 raw_df = None
+
 if file:
     try:
         raw_df = read_orders_excel(file)
@@ -216,19 +218,16 @@ st.markdown("---")
 
 
 # =========================================================
-# Linker wiring (CORE FIX)
+# Linker wiring (CORE)
 # =========================================================
 linker = ensure_linker()
 
 
 def _release_sells(intents):
-    # SELLs released ONLY when BUY fills
-    execute_bundle(
-        intents=intents,
-        kite=st.session_state["kite"],
-        live=True,
-        link_sells_via_ws=False,
-    )
+    client = st.session_state.get("kite")
+    if not client:
+        return
+    execute_bundle(kite=client, intents=intents, linker=linker)
 
 
 linker.set_release_callback(_release_sells)
@@ -247,7 +246,6 @@ def execute_rows(rows):
 
         client = st.session_state["kite"]
 
-        # WS manager
         if st.session_state["ws"] is None:
             st.session_state["ws"] = WSManager(
                 api_key,
@@ -256,7 +254,6 @@ def execute_rows(rows):
             )
             st.session_state["ws"].start()
 
-        # GTT watcher (optional)
         if st.session_state["gtt"] is None:
             st.session_state["gtt"] = GTTWatcher(client)
             st.session_state["gtt"].start()
@@ -264,10 +261,9 @@ def execute_rows(rows):
     intents = [OrderIntent(**r) for r in rows]
 
     results = execute_bundle(
-        intents=intents,
         kite=client,
-        live=live_mode,
-        link_sells_via_ws=live_mode,
+        intents=intents,
+        linker=linker,
     )
 
     df = pd.DataFrame(results)
@@ -315,10 +311,9 @@ if st.button("Exit ALL NRML Positions", disabled=not live_mode):
             st.info("No NRML positions.")
         else:
             results = execute_bundle(
-                intents=intents,
                 kite=client,
-                live=True,
-                link_sells_via_ws=False,
+                intents=intents,
+                linker=linker,
             )
             st.dataframe(pd.DataFrame(results), use_container_width=True)
     except Exception as e:
@@ -363,12 +358,9 @@ pnl_monitor.arm_kill_switch(ks_on, tp, sl)
 # Debug panels
 # =========================================================
 st.markdown("---")
-st.markdown("### Linker / WS Debug")
+st.markdown("### Linker / Runtime Debug")
 
-if not pause_refresh:
-    st_autorefresh(interval=2000, key="ws_dbg")
-
-st.caption("Linker snapshot")
+st.caption("Order linker snapshot")
 st.json(linker.snapshot())
 
 if st.session_state["gtt"]:
