@@ -25,20 +25,28 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                     price = float(intent.gtt_limit)
                     print(f"[PLACEMENT] GTT SINGLE BUY: {intent.symbol} qty={intent.qty} trigger={trigger} limit={price}")
                     response = kite.place_gtt(
-                        trigger_type="single",
+                        trigger_type=kite.GTT_TYPE_SINGLE,
                         tradingsymbol=intent.symbol,
                         exchange=intent.exchange,
                         trigger_values=[trigger],
-                        last_price=trigger,
+                        last_price=trigger,  # Ideally fetch LTP via kite.quote(), but trigger is fallback
                         orders=[{
+                            "exchange": intent.exchange,
+                            "tradingsymbol": intent.symbol,
                             "transaction_type": "BUY",
                             "quantity": intent.qty,
                             "order_type": "LIMIT",
                             "product": intent.product,
                             "price": price,
+                            "validity": intent.validity,
+                            "variety": intent.variety,
+                            "disclosed_quantity": intent.disclosed_qty,
                         }],
                     )
-                    order_id = response["id"]
+                    # Safe extraction of GTT ID from response
+                    order_id = response.get("id") or response.get("data", {}).get("id")
+                    if not order_id:
+                        raise ValueError(f"GTT placement failed: no ID in response {response}")
                     print(f"[PLACEMENT] GTT placed: {order_id}")
                     results.append({
                         "order_id": order_id,
@@ -55,29 +63,42 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                     trig2 = float(intent.gtt_trigger_2)
                     price2 = float(intent.gtt_limit_2)
                     response = kite.place_gtt(
-                        trigger_type="oco",
+                        trigger_type=kite.GTT_TYPE_OCO,
                         tradingsymbol=intent.symbol,
                         exchange=intent.exchange,
                         trigger_values=[trig1, trig2],
-                        last_price=trig1,
+                        last_price=trig1,  # Ideally fetch LTP via kite.quote(), but trigger is fallback
                         orders=[
                             {
+                                "exchange": intent.exchange,
+                                "tradingsymbol": intent.symbol,
                                 "transaction_type": "BUY",
                                 "quantity": intent.qty,
                                 "order_type": "LIMIT",
                                 "product": intent.product,
                                 "price": price1,
+                                "validity": intent.validity,
+                                "variety": intent.variety,
+                                "disclosed_quantity": intent.disclosed_qty,
                             },
                             {
+                                "exchange": intent.exchange,
+                                "tradingsymbol": intent.symbol,
                                 "transaction_type": "BUY",
                                 "quantity": intent.qty,
                                 "order_type": "LIMIT",
                                 "product": intent.product,
                                 "price": price2,
+                                "validity": intent.validity,
+                                "variety": intent.variety,
+                                "disclosed_quantity": intent.disclosed_qty,
                             },
                         ],
                     )
-                    order_id = response["id"]
+                    # Safe extraction of GTT ID from response
+                    order_id = response.get("id") or response.get("data", {}).get("id")
+                    if not order_id:
+                        raise ValueError(f"GTT placement failed: no ID in response {response}")
                     results.append({
                         "order_id": order_id,
                         "symbol": intent.symbol,
@@ -158,21 +179,29 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
                 trigger = float(intent.gtt_trigger)
                 price = float(intent.gtt_limit)
                 response = kite.place_gtt(
-                    trigger_type="single",
+                    trigger_type=kite.GTT_TYPE_SINGLE,
                     tradingsymbol=intent.symbol,
                     exchange=intent.exchange,
                     trigger_values=[trigger],
                     last_price=trigger,
                     orders=[{
+                        "exchange": intent.exchange,
+                        "tradingsymbol": intent.symbol,
                         "transaction_type": "SELL",
                         "quantity": intent.qty,
                         "order_type": "LIMIT",
                         "product": intent.product,
                         "price": price,
+                        "validity": intent.validity,
+                        "variety": intent.variety,
+                        "disclosed_quantity": intent.disclosed_qty,
                     }],
                 )
+                gtt_id = response.get("id") or response.get("data", {}).get("id")
+                if not gtt_id:
+                    raise ValueError(f"GTT placement failed: no ID in response {response}")
                 results.append({
-                    "order_id": response["id"],
+                    "order_id": gtt_id,
                     "symbol": intent.symbol,
                     "txn_type": "SELL",
                     "qty": intent.qty,
@@ -184,30 +213,43 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
                 trig2 = float(intent.gtt_trigger_2)
                 price2 = float(intent.gtt_limit_2)
                 response = kite.place_gtt(
-                    trigger_type="oco",
+                    trigger_type=kite.GTT_TYPE_OCO,
                     tradingsymbol=intent.symbol,
                     exchange=intent.exchange,
                     trigger_values=[trig1, trig2],
                     last_price=trig1,
                     orders=[
                         {
+                            "exchange": intent.exchange,
+                            "tradingsymbol": intent.symbol,
                             "transaction_type": "SELL",
                             "quantity": intent.qty,
                             "order_type": "LIMIT",
                             "product": intent.product,
                             "price": price1,
+                            "validity": intent.validity,
+                            "variety": intent.variety,
+                            "disclosed_quantity": intent.disclosed_qty,
                         },
                         {
+                            "exchange": intent.exchange,
+                            "tradingsymbol": intent.symbol,
                             "transaction_type": "SELL",
                             "quantity": intent.qty,
                             "order_type": "LIMIT",
                             "product": intent.product,
                             "price": price2,
+                            "validity": intent.validity,
+                            "variety": intent.variety,
+                            "disclosed_quantity": intent.disclosed_qty,
                         },
                     ],
                 )
+                gtt_id = response.get("id") or response.get("data", {}).get("id")
+                if not gtt_id:
+                    raise ValueError(f"GTT placement failed: no ID in response {response}")
                 results.append({
-                    "order_id": response["id"],
+                    "order_id": gtt_id,
                     "symbol": intent.symbol,
                     "txn_type": "SELL",
                     "qty": intent.qty,
