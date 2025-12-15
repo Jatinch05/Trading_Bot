@@ -260,11 +260,21 @@ def execute_rows(rows):
 
     intents = [OrderIntent(**r) for r in rows]
 
-    results = execute_bundle(
-        kite=client,
-        intents=intents,
-        linker=linker,
-    )
+    if not live_mode:
+        # Dry-run: just show what WOULD be placed
+        results = [{
+            "symbol": i.symbol,
+            "txn_type": i.txn_type,
+            "qty": i.qty,
+            "order_type": i.order_type,
+            "status": "DRY-RUN",
+        } for i in intents]
+    else:
+        results = execute_bundle(
+            kite=client,
+            intents=intents,
+            linker=linker,
+        )
 
     df = pd.DataFrame(results)
     st.subheader("Execution Results")
