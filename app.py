@@ -485,7 +485,13 @@ pnl_monitor.arm_kill_switch(ks_on, tp, sl)
 # Debug panels
 # =========================================================
 st.markdown("---")
-st.markdown("### Linker / Runtime Debug")
+
+col1, col2 = st.columns([3, 1])
+with col1:
+    st.markdown("### Linker / Runtime Debug")
+with col2:
+    if st.button("🔄 Refresh Debug", use_container_width=True):
+        st.rerun()
 
 st.caption("Order linker snapshot")
 st.json(linker.snapshot())
