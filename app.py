@@ -381,3 +381,12 @@ if st.session_state["gtt"]:
     st.json(st.session_state["gtt"].snapshot())
 else:
     st.warning("GTT Watcher not initialized. Execute orders in Live mode to start.")
+
+st.caption("WebSocket")
+if st.session_state.get("ws"):
+    try:
+        st.json(st.session_state["ws"].snapshot())
+    except Exception as e:
+        st.error(f"WS snapshot error: {e}")
+else:
+    st.warning("WebSocket not initialized. Execute in Live mode with valid access token.")
