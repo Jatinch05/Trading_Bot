@@ -12,6 +12,9 @@ class OrderLinker:
         self._release_cb = None
         # Shared dedup across ALL credit sources (WS + poller)
         self._credited_order_ids = set()
+        # Diagnostics: how much credit was applied per key
+        self._credited_qty_by_key = defaultdict(int)
+        self._credited_count_by_key = defaultdict(int)
         # Protect credits/queues/releases across background threads
         self._lock = threading.Lock()
 
@@ -57,6 +60,8 @@ class OrderLinker:
 
             self._credited_order_ids.add(oid)
             self.buy_credits[key] += qty
+            self._credited_qty_by_key[key] += qty
+            self._credited_count_by_key[key] += 1
             print(f"[LINKER] Credited {qty} to key {key} (source={source}), total credits={self.buy_credits[key]}")
 
             q = self.sell_queues[key]
@@ -127,4 +132,7 @@ class OrderLinker:
             "gtt_registry": self.gtt_registry,
             "instance_id": hex(id(self)),
             "credited_order_ids": len(self._credited_order_ids),
+            "credited_qty_by_key": {_k(k): v for k, v in self._credited_qty_by_key.items()},
+            "credited_count_by_key": {_k(k): v for k, v in self._credited_count_by_key.items()},
+            "credited_order_ids_sample": sorted(list(self._credited_order_ids))[:20],
         }
