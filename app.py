@@ -2,6 +2,8 @@
 # Architecture: Auth → Upload → Validate → Execute → Monitor → Debug
 
 import streamlit as st
+import os
+import sys
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
 
@@ -24,6 +26,16 @@ from services import pnl_monitor
 # =========================================================
 # PAGE SETUP
 # =========================================================
+"""
+Ensure imports work both locally and in managed environments where the
+working directory may differ. Add the project root to sys.path so that
+`services.*` and `models` resolve reliably.
+"""
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = APP_DIR  # repo root is same directory in this workspace
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 
