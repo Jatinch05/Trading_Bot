@@ -214,7 +214,9 @@ if st.session_state.get("vdf_disp") is not None:
     st.markdown("### Select Rows to Execute")
     
     disp = st.session_state["vdf_disp"].copy()
-    disp.insert(0, "select", False)
+    # Add select column if it doesn't exist
+    if "select" not in disp.columns:
+        disp.insert(0, "select", False)
     
     edited = st.data_editor(
         disp,
