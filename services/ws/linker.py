@@ -22,6 +22,8 @@ class OrderLinker:
 
     def register_gtt_buy(self, gtt_id, intent):
         """Register a GTT BUY order; child order will be mapped when triggered."""
+        # Ensure GTT ID is always a string for consistent lookups
+        gtt_id = str(gtt_id)
         self.gtt_registry[gtt_id] = self._key(intent)
 
     def on_buy_fill(self, order_id, filled_qty):
@@ -47,9 +49,16 @@ class OrderLinker:
 
     def bind_gtt_child(self, gtt_id: str, child_order_id: str):
         """Map GTT child order to the same key as parent GTT BUY."""
+        # Ensure both IDs are strings
+        gtt_id = str(gtt_id)
+        child_order_id = str(child_order_id)
+        
         key = self.gtt_registry.get(gtt_id)
         if key:
             self.buy_registry[child_order_id] = key
+            print(f"[LINKER] Mapped child {child_order_id} to key {key}")
+        else:
+            print(f"[LINKER] ⚠️  GTT {gtt_id} not found in gtt_registry. Available: {list(self.gtt_registry.keys())}")
 
     def credit_by_order_id(self, order_id: str, qty: int):
         """Manually add credit by known buy order_id (e.g., from GTT child order events)."""
