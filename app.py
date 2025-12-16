@@ -125,70 +125,66 @@ if st.sidebar.button("Test session", disabled=(st.session_state["kite"] is None)
 
 
 # =========================================================
-# WebSocket Debug (added for multi-user coordination)
+# WebSocket Debug (uses same access_token as main trading)
 # =========================================================
 st.sidebar.markdown("---")
 st.sidebar.markdown("### WebSocket Debug")
-st.sidebar.caption("Test WS independently with fresh token")
+st.sidebar.caption("Test WS with current access_token")
 
-# Get fresh request_token for WS test
-ws_request_token = st.sidebar.text_input("Request token for WS test", key="ws_req_token")
+if st.sidebar.button("Test WebSocket", disabled=(st.session_state.get("access_token") is None)):
+    if not st.session_state.get("access_token"):
+        st.sidebar.error("❌ No access_token. Use 'Exchange token' above first.")
+    else:
+        st.sidebar.info("🚀 Testing WebSocket (30 sec listen)...")
+        
+        try:
+            from kiteconnect import KiteTicker
+            import time
+            
+            ws_events = []
+            
+            def ws_on_connect(ws, resp):
+                ws_events.append(f"✅ [WS_CONNECT] Connected")
+            
+            def ws_on_error(ws, code, reason):
+                ws_events.append(f"❌ [WS_ERROR] code={code} reason={reason}")
+            
+            def ws_on_close(ws, code, reason):
+                ws_events.append(f"⚠️  [WS_CLOSE] code={code}")
+            
+            def ws_on_order_update(ws, data):
+                status = data.get("status")
+                txn = data.get("transaction_type")
+                order_id = data.get("order_id")
+                ws_events.append(f"📬 [WS_ORDER_UPDATE] {txn} {order_id} → {status}")
+                if status == "COMPLETE" and txn == "BUY":
+                    ws_events.append(f"   ✅ BUY FILLED: {order_id}")
+            
+            kws = KiteTicker(api_key, st.session_state["access_token"])
+            kws.on_connect = ws_on_connect
+            kws.on_error = ws_on_error
+            kws.on_close = ws_on_close
+            kws.on_order_update = ws_on_order_update
+            
+            kws.connect(threaded=True)
+            
+            # Listen for 30 seconds
+            start_time = time.time()
+            while time.time() - start_time < 30:
+                time.sleep(1)
+            
+            kws.close()
+            ws_events.append(f"⏹️  Test complete")
+            
+            st.sidebar.info("📊 WS Test Events:")
+            for event in ws_events:
+                st.sidebar.text(event)
+            
+            st.sidebar.success(f"✅ Total events: {len(ws_events)}")
+            
+        except Exception as e:
+            st.sidebar.error(f"❌ WS test failed: {e}")
 
-if st.sidebar.button("Exchange & Test WebSocket", disabled=(auth is None or not ws_request_token)):
-    st.sidebar.info("🔄 Exchanging token...")
-    try:
-        # Exchange for fresh access_token
-        ws_access_token = auth.exchange_request_token(ws_request_token)
-        st.sidebar.success(f"✅ Token: {ws_access_token[:20]}...")
-        
-        # Test WebSocket connection
-        from kiteconnect import KiteTicker
-        import time
-        
-        ws_events = []
-        
-        def ws_on_connect(ws, resp):
-            ws_events.append(f"✅ [WS_CONNECT] {resp}")
-        
-        def ws_on_error(ws, code, reason):
-            ws_events.append(f"❌ [WS_ERROR] code={code} reason={reason}")
-        
-        def ws_on_close(ws, code, reason):
-            ws_events.append(f"⚠️  [WS_CLOSE] code={code} reason={reason}")
-        
-        def ws_on_order_update(ws, data):
-            status = data.get("status")
-            txn = data.get("transaction_type")
-            order_id = data.get("order_id")
-            ws_events.append(f"📬 [WS_ORDER_UPDATE] {txn} {order_id} → {status}")
-            if status == "COMPLETE" and txn == "BUY":
-                ws_events.append(f"   ✅ BUY FILLED: {order_id}")
-        
-        st.sidebar.info("🚀 Connecting WebSocket (30 sec listen)...")
-        kws = KiteTicker(api_key, ws_access_token)
-        kws.on_connect = ws_on_connect
-        kws.on_error = ws_on_error
-        kws.on_close = ws_on_close
-        kws.on_order_update = ws_on_order_update
-        
-        kws.connect(threaded=True)
-        
-        # Listen for 30 seconds
-        start_time = time.time()
-        while time.time() - start_time < 30:
-            time.sleep(1)
-        
-        kws.close()
-        ws_events.append(f"⏹️  Test complete")
-        
-        st.sidebar.info("📊 Events received:")
-        for event in ws_events:
-            st.sidebar.text(event)
-        
-        st.sidebar.success(f"Total events: {len(ws_events)}")
-        
-    except Exception as e:
-        st.sidebar.error(f"❌ WS test failed: {e}")
 
 
 # =========================================================
