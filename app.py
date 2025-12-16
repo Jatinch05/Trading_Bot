@@ -49,7 +49,15 @@ for k, v in DEFAULT_STATE.items():
 # =========================================================
 # AUTO-REFRESH (page-wide)
 # =========================================================
-st_autorefresh(interval=2000, key="page_refresh")
+# Allow pausing auto-refresh to avoid flicker during auth/token exchange
+pause_refresh = st.sidebar.checkbox(
+    "Pause auto-refresh",
+    value=True,
+    help="Disable periodic reruns to avoid flicker while authenticating"
+)
+
+if not pause_refresh:
+    st_autorefresh(interval=2000, key="page_refresh")
 
 
 # =========================================================
