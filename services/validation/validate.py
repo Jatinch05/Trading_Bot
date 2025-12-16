@@ -173,6 +173,9 @@ def normalize_and_validate(df: pd.DataFrame, instruments) -> Tuple[List[OrderInt
 
             else:
                 # Regular order semantic checks
+                # SELL orders must be linked to a BUY via tag=link:<group>
+                if txn_type == "SELL" and not tag:
+                    raise ValueError("SELL requires tag=link:<group> to be queued and released after BUY fills")
                 if order_type == "MARKET":
                     if trig_regular not in (None, "", 0, 0.0):
                         raise ValueError("MARKET order must not include trigger_price")
