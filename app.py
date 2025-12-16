@@ -222,7 +222,7 @@ if file:
     try:
         raw_df = read_orders_excel(file)
         st.subheader("Preview")
-        st.dataframe(raw_df.head(20), use_container_width=True)
+        st.dataframe(raw_df.head(20), width="stretch")
     except Exception as e:
         st.error(f"Failed reading Excel: {e}")
 
@@ -256,7 +256,7 @@ def render_selection_table():
     edited = st.data_editor(
         disp,
         hide_index=False,
-        use_container_width=True,
+        width="stretch",
         column_config={"select": st.column_config.CheckboxColumn("Select")},
         key="validated_editor",
     )
@@ -280,7 +280,7 @@ try:
             st.error("Some rows failed.")
             st.dataframe(
                 pd.DataFrame(errors, columns=["row", "error"]),
-                use_container_width=True,
+                width="stretch",
             )
 
         render_selection_table()
@@ -360,7 +360,7 @@ def execute_rows(rows):
 
     df = pd.DataFrame(results)
     st.subheader("Execution Results")
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width="stretch")
 
     data, fname = dataframe_to_excel_download(df)
     st.download_button("Download Results", data=data, file_name=fname)
@@ -407,7 +407,7 @@ if st.button("Exit ALL NRML Positions", disabled=not live_mode):
                 intents=intents,
                 linker=linker,
             )
-            st.dataframe(pd.DataFrame(results), use_container_width=True)
+            st.dataframe(pd.DataFrame(results), width="stretch")
     except Exception as e:
         st.error(f"Exit ALL failed: {e}")
 
@@ -431,7 +431,7 @@ snap = pnl_monitor.get_snapshot()
 rows = snap.get("rows", [])
 
 if rows:
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, height=300)
+    st.dataframe(pd.DataFrame(rows), width="stretch", height=300)
 else:
     st.info("No open NRML positions.")
 

@@ -101,7 +101,7 @@ class OrderPoller:
         """Return current state."""
         return {
             "running": self._running,
-            "tracked_orders": len(self._known_orders),
-            "credited": len(self._credited),
-            "known_orders": self._known_orders,
+            "tracked_orders": list(self._known_orders.keys()),
+            "credited": list(self._credited),
+            "status": dict(self._known_orders),
         }

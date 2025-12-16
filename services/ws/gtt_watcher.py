@@ -63,11 +63,14 @@ class GTTWatcher:
                     if self._linker:
                         try:
                             orders = gtt.get("orders", [])
+                            print(f"[GTT_WATCHER] GTT {gid} has {len(orders)} orders in response")
                             for o in orders:
+                                print(f"[GTT_WATCHER] Order object: {o}")
                                 # Extract child order_id from nested Zerodha response
                                 result = o.get("result", {}) or {}
                                 order_result = result.get("order_result", {}) or {}
                                 child_oid = order_result.get("order_id")
+                                print(f"[GTT_WATCHER] Extracted child_oid={child_oid}")
                                 if child_oid:
                                     # Map child order to same key as parent GTT
                                     self._linker.bind_gtt_child(gid, child_oid)
@@ -78,7 +81,9 @@ class GTTWatcher:
                                         self._poller.track_order(child_oid)
                                         print(f"[GTT_WATCHER] Started polling child order {child_oid} (WS backup)")
                         except Exception as e:
+                            import traceback
                             print(f"[GTT_WATCHER] Error binding child: {e}")
+                            traceback.print_exc()
         except Exception:
             pass
 
@@ -89,4 +94,5 @@ class GTTWatcher:
             "pending": list(self.pending),
             "resolved": dict(self.resolved),
             "interval": self.interval,
+            "poller": self._poller.snapshot() if self._poller else None,
         }
