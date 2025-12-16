@@ -202,8 +202,8 @@ if file:
     # Validate
     if st.button("✓ Validate Rows"):
         try:
-            # Load instruments from data/instruments.csv (robust loader)
-            intents, errors = normalize_and_validate(raw_df, instruments=Instruments.load())
+            # Validate without instruments (as in previous version)
+            intents, errors = normalize_and_validate(raw_df)
             st.session_state["validated_rows"] = intents
             
             if not errors:
