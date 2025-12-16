@@ -149,7 +149,7 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                     raise ValueError(f"Unsupported GTT type for BUY: {intent.gtt_type}")
                 # Register GTT BUY with linker if tagged (not exit)
                 if linker and intent.tag and intent.tag.startswith("link:"):
-                    linker.register_gtt_buy(order_id, intent)
+                    linker.register_gtt_buy(str(order_id), intent)  # Convert to string for consistency
                     print(f"[LINKER] Registered GTT BUY: {order_id} → {intent.symbol} tag={intent.tag}")
             else:
                 payload = intent.to_kite_payload()
