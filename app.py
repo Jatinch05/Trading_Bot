@@ -79,7 +79,6 @@ def ensure_linker() -> OrderLinker:
     """Ensure linker exists and has release callback."""
     if st.session_state["linker"] is None:
         st.session_state["linker"] = OrderLinker()
-        st.session_state["linker"].set_release_callback(_on_sells_released)
     return st.session_state["linker"]
 
 
@@ -106,20 +105,19 @@ def ensure_ws(kite, linker):
     return st.session_state["ws"]
 
 
-def _on_sells_released(sells: list):
-    """Callback when linker releases SELLs after BUY fills."""
-    print(f"[APP] Release callback triggered: {len(sells)} SELLs to place")
-    client = st.session_state.get("kite")
-    if not client:
-        print("[APP] ❌ No Kite client, cannot place SELLs")
-        return
-    
+def _install_release_callback(linker: OrderLinker, client):
+    """Install a thread-safe callback (no Streamlit/session access in threads)."""
     from services.orders.pipeline import execute_released_sells
-    try:
-        execute_released_sells(kite=client, sells=sells, live=True)
-        print(f"[APP] ✅ Released {len(sells)} SELLs via callback")
-    except Exception as e:
-        print(f"[APP] ❌ Release failed: {e}")
+
+    def _place_released(sells: list):
+        try:
+            print(f"[APP] Placing {len(sells)} released SELL(s)")
+            execute_released_sells(kite=client, sells=sells, live=True)
+            print(f"[APP] ✅ Placed {len(sells)} released SELL(s)")
+        except Exception as e:
+            print(f"[APP] ❌ Released SELL placement failed: {e}")
+
+    linker.set_release_callback(_place_released)
 
 
 # =========================================================
@@ -177,6 +175,8 @@ if st.sidebar.button("🚪 Sign Out / Clear Session", use_container_width=True):
         pnl_monitor.stop()
     st.sidebar.success("Session cleared")
 
+# (Sidebar Debug removed per user request)
+
 
 # =========================================================
 # SECTION 2: ORDER EXECUTION (Main)
@@ -187,6 +187,9 @@ if st.session_state["kite"] is None:
 
 client = st.session_state["kite"]
 linker = ensure_linker()
+
+# Install (or refresh) release callback with current client
+_install_release_callback(linker, client)
 
 # Ensure runtime services are initialized in LIVE mode
 if live_mode:

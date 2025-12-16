@@ -77,12 +77,34 @@ class OrderLinker:
             self._release_cb(released)
 
     def queue_sell(self, intent):
-        self.sell_queues[self._key(intent)].append(intent)
+        key = self._key(intent)
+        q = self.sell_queues[key]
+        q.append(intent)
+        print(f"[LINKER] Queued SELL: {intent.symbol} qty={intent.qty} tag={intent.tag}")
+        
+        # Immediately check if existing credits can release this SELL
+        released = []
+        while q and self.buy_credits[key] >= q[0].qty:
+            sell = q.popleft()
+            self.buy_credits[key] -= sell.qty
+            released.append(sell)
+            print(f"[LINKER] Released SELL (on queue): {sell.symbol} qty={sell.qty}, remaining credits={self.buy_credits[key]}")
+        
+        if released and self._release_cb:
+            print(f"[LINKER] Calling release callback with {len(released)} SELLs (from queue_sell)")
+            self._release_cb(released)
 
     def snapshot(self):
+        def _k(k):
+            # JSON-safe key representation
+            if isinstance(k, tuple):
+                return "|".join(map(str, k))
+            return str(k)
         return {
-            "credits": dict(self.buy_credits),
-            "queues": {k: len(v) for k, v in self.sell_queues.items()},
+            # dicts keyed by tuples won't render in st.json; stringify keys
+            "credits": {_k(k): v for k, v in self.buy_credits.items()},
+            "queues": {_k(k): len(v) for k, v in self.sell_queues.items()},
             "buy_registry": self.buy_registry,
             "gtt_registry": self.gtt_registry,
+            "instance_id": hex(id(self)),
         }

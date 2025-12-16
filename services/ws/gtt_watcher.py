@@ -119,8 +119,14 @@ class GTTWatcher:
                 if gid not in self._linker.gtt_registry:
                     continue
                 
-                # If already resolved, skip
+                # If already resolved, try to bind null children on recovery scan
                 if gid in self.resolved:
+                    if self.resolved[gid] is None and gtt.get("order_id"):
+                        direct_child = str(gtt.get("order_id"))
+                        self._linker.bind_gtt_child(gid, direct_child)
+                        print(f"[GTT_WATCHER] Recovery: Bound null→child {direct_child} for GTT {gid}")
+                        if self._poller:
+                            self._poller.track_order(direct_child)
                     continue
                 
                 # Check if triggered
