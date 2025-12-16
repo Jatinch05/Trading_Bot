@@ -203,12 +203,12 @@ if file:
     if st.button("✓ Validate Rows"):
         try:
             # Validate with minimal instruments loader (returns empty set if file missing)
-            intents, errors = normalize_and_validate(raw_df, instruments=Instruments.load())
+            intents, vdf, errors = normalize_and_validate(raw_df, instruments=Instruments.load())
             st.session_state["validated_rows"] = intents
             
             if not errors:
                 st.success(f"✅ All {len(intents)} rows valid")
-                st.session_state["vdf_disp"] = raw_df.copy()
+                st.session_state["vdf_disp"] = vdf.copy()
             else:
                 st.error(f"❌ {len(errors)} rows failed validation")
                 st.dataframe(
