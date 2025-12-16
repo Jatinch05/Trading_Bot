@@ -376,6 +376,8 @@ st.markdown("### Linker / Runtime Debug")
 st.caption("Order linker snapshot")
 st.json(linker.snapshot())
 
+st.caption("GTT watcher")
 if st.session_state["gtt"]:
-    st.caption("GTT watcher")
     st.json(st.session_state["gtt"].snapshot())
+else:
+    st.warning("GTT Watcher not initialized. Execute orders in Live mode to start.")
