@@ -161,26 +161,42 @@ if st.sidebar.button("Test WebSocket", disabled=(st.session_state.get("access_to
                     ws_events.append(f"   ✅ BUY FILLED: {order_id}")
             
             kws = KiteTicker(api_key, st.session_state["access_token"])
+            ws_events.append("📝 KiteTicker created")
+            
             kws.on_connect = ws_on_connect
             kws.on_error = ws_on_error
             kws.on_close = ws_on_close
             kws.on_order_update = ws_on_order_update
+            ws_events.append("📝 Callbacks attached")
             
-            kws.connect(threaded=True)
+            try:
+                ws_events.append("📝 Calling kws.connect(threaded=True)...")
+                kws.connect(threaded=True)
+                ws_events.append("📝 connect() returned")
+            except Exception as connect_err:
+                ws_events.append(f"❌ connect() threw exception: {connect_err}")
+                raise
             
             # Listen for 30 seconds
             start_time = time.time()
             while time.time() - start_time < 30:
-                time.sleep(1)
+                time.sleep(0.5)
             
-            kws.close()
-            ws_events.append(f"⏹️  Test complete")
+            try:
+                kws.close()
+            except Exception as close_err:
+                ws_events.append(f"⚠️  close() error: {close_err}")
+            
+            ws_events.append(f"⏹️  Test complete ({len(ws_events)} total events)")
             
             st.sidebar.info("📊 WS Test Events:")
             for event in ws_events:
                 st.sidebar.text(event)
             
-            st.sidebar.success(f"✅ Total events: {len(ws_events)}")
+            if any("CONNECT" in e for e in ws_events):
+                st.sidebar.success(f"✅ Connected! Events: {len(ws_events)}")
+            else:
+                st.sidebar.error(f"❌ Never connected. Events: {len(ws_events)}")
             
         except Exception as e:
             st.sidebar.error(f"❌ WS test failed: {e}")
