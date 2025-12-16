@@ -58,6 +58,19 @@ def ensure_linker() -> OrderLinker:
     return st.session_state["linker"]
 
 
+def ensure_gtt_watcher(kite, linker):
+    """Ensure GTT watcher is created, bound, and started."""
+    if st.session_state["gtt"] is None:
+        st.session_state["gtt"] = GTTWatcher(kite)
+        st.session_state["gtt"].bind_linker(linker)
+        st.session_state["gtt"].start()
+        print("[APP] GTT watcher initialized and started")
+    elif not st.session_state["gtt"].running:
+        # Restart if stopped
+        st.session_state["gtt"].start()
+        print("[APP] GTT watcher restarted")
+    return st.session_state["gtt"]
+
 # =========================================================
 # Sidebar – mode & auth
 # =========================================================
@@ -343,10 +356,8 @@ def execute_rows(rows):
             )
             st.session_state["ws"].start()
 
-        if st.session_state["gtt"] is None:
-            st.session_state["gtt"] = GTTWatcher(client)
-            st.session_state["gtt"].bind_linker(linker)
-            st.session_state["gtt"].start()
+        # Ensure GTT watcher is initialized and running
+        ensure_gtt_watcher(client, linker)
 
     intents = [OrderIntent(**r) for r in rows]
 
@@ -492,6 +503,27 @@ with col1:
 with col2:
     if st.button("🔄 Refresh Debug", use_container_width=True):
         st.rerun()
+
+# Status summary
+if st.session_state["gtt"]:
+    snap = st.session_state["gtt"].snapshot()
+    pending_count = len(snap.get("pending", []))
+    resolved_count = len(snap.get("resolved", {}))
+    
+    if pending_count > 0:
+        st.info(f"⏳ {pending_count} GTT(s) pending trigger (waiting for market price)")
+    if resolved_count > 0:
+        st.success(f"✅ {resolved_count} GTT(s) triggered")
+    
+    linker_snap = linker.snapshot()
+    credits_count = sum(linker_snap.get("credits", {}).values())
+    queued_sells = sum(linker_snap.get("queues", {}).values())
+    
+    if credits_count > 0:
+        st.success(f"💰 {credits_count} shares credited (BUYs filled)")
+    if queued_sells > 0:
+        st.warning(f"📦 {queued_sells} SELL(s) queued, waiting for BUY fills")
+
 
 st.caption("Order linker snapshot")
 st.json(linker.snapshot())
