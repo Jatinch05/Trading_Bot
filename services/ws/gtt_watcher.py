@@ -14,6 +14,7 @@ class GTTWatcher:
         self.interval = 2
         self._thread = None
         self._linker = None
+        self._poller = None  # Fallback order status poller
 
     def bind_linker(self, linker):
         self._linker = linker
@@ -22,6 +23,12 @@ class GTTWatcher:
             for gid in self._linker.gtt_registry.keys():
                 if gid not in self.resolved:
                     self.pending.add(str(gid))
+        
+        # Start fallback order poller
+        if not self._poller and self._linker:
+            from services.ws.order_poller import OrderPoller
+            self._poller = OrderPoller(self.kite, self._linker)
+            self._poller.start()
 
     def start(self):
         if self.running:
@@ -65,6 +72,11 @@ class GTTWatcher:
                                     # Map child order to same key as parent GTT
                                     self._linker.bind_gtt_child(gid, child_oid)
                                     print(f"[GTT_WATCHER] Bound child order: {child_oid} → parent GTT {gid}")
+                                    
+                                    # Also track it in the poller (fallback for WS failures)
+                                    if self._poller:
+                                        self._poller.track_order(child_oid)
+                                        print(f"[GTT_WATCHER] Started polling child order {child_oid} (WS backup)")
                         except Exception as e:
                             print(f"[GTT_WATCHER] Error binding child: {e}")
         except Exception:
