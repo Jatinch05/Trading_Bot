@@ -30,9 +30,12 @@ def _resolve_last_price(kite, intent: OrderIntent, fallback: float) -> float:
         last_price = fallback
 
     diff = abs(last_price - fallback)
-    if diff < 1e-6:
-        # Epsilon: 0.1% of price, minimum 0.05 (or 0.01 for penny stocks)
-        epsilon = max(abs(fallback) * 0.001, 0.05 if abs(fallback) >= 1 else 0.01)
+    # Kite requires >0.25% difference; use 0.3% to be safe, minimum 0.5
+    threshold_pct = 0.003  # 0.3%
+    min_epsilon = 0.5
+    
+    if diff < abs(fallback) * threshold_pct:
+        epsilon = max(abs(fallback) * threshold_pct, min_epsilon)
         direction = 1 if intent.txn_type == "BUY" else -1
         last_price = fallback + direction * epsilon
 
