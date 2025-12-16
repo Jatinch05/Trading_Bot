@@ -35,6 +35,12 @@ class GTTWatcher:
 
     def _poll(self):
         try:
+            # Ensure pending contains all known GTT BUY ids from linker
+            if self._linker:
+                for gid in self._linker.gtt_registry.keys():
+                    if gid not in self.resolved:
+                        self.pending.add(str(gid))
+
             for gtt in self.kite.get_gtts():
                 gid = str(gtt["id"])
                 if gid in self.pending and gtt["status"] == "triggered":
