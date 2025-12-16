@@ -67,9 +67,17 @@ live_mode = mode == "Live"
 api_key = st.sidebar.text_input("Kite API Key")
 api_secret = st.sidebar.text_input("Kite API Secret", type="password")
 
+# Auto-refresh control
 pause_refresh = st.sidebar.checkbox(
-    "Pause live auto-refresh (recommended while selecting rows)", value=True
+    "Pause auto-refresh", value=False
 )
+
+if not pause_refresh:
+    st_autorefresh(interval=2000, key="live_refresh")
+
+# Manual refresh button
+if st.sidebar.button("🔄 Force Refresh", use_container_width=True):
+    st.rerun()
 
 
 # =========================================================
@@ -367,6 +375,36 @@ def execute_rows(rows):
 
 
 # =========================================================
+# Live Order Status View
+# =========================================================
+if live_mode and st.session_state.get("kite"):
+    st.markdown("---")
+    st.markdown("### 📋 Live Order Status")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col2:
+        if st.button("🔄 Refresh Orders", use_container_width=True):
+            pass  # Auto-refresh will handle it
+    
+    try:
+        orders = st.session_state["kite"].orders()
+        if orders:
+            order_df = pd.DataFrame(orders)
+            # Show key columns
+            display_cols = ["order_id", "tradingsymbol", "transaction_type", "quantity", 
+                          "filled_quantity", "status", "order_type", "product", "order_timestamp"]
+            available_cols = [c for c in display_cols if c in order_df.columns]
+            st.dataframe(order_df[available_cols], width="stretch", height=400)
+            st.caption(f"Total orders: {len(orders)}")
+        else:
+            st.info("No orders found")
+    except Exception as e:
+        st.error(f"Failed to fetch orders: {e}")
+
+
+
+# =========================================================
 # Execute controls
 # =========================================================
 validated_ok = (
@@ -424,9 +462,6 @@ else:
     if pnl_monitor.is_running():
         pnl_monitor.stop()
 
-if not pause_refresh:
-    st_autorefresh(interval=2000, key="pos_tick")
-
 snap = pnl_monitor.get_snapshot()
 rows = snap.get("rows", [])
 
@@ -451,9 +486,6 @@ pnl_monitor.arm_kill_switch(ks_on, tp, sl)
 # =========================================================
 st.markdown("---")
 st.markdown("### Linker / Runtime Debug")
-
-# Auto-refresh debug panels every 2 seconds
-st_autorefresh(interval=2000, key="debug_refresh")
 
 st.caption("Order linker snapshot")
 st.json(linker.snapshot())

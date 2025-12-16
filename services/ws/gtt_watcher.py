@@ -29,6 +29,9 @@ class GTTWatcher:
             from services.ws.order_poller import OrderPoller
             self._poller = OrderPoller(self.kite, self._linker)
             self._poller.start()
+        
+        # Scan for already-triggered GTTs (startup recovery)
+        self._scan_existing_triggered_gtts()
 
     def start(self):
         if self.running:
@@ -72,6 +75,7 @@ class GTTWatcher:
                                 child_oid = order_result.get("order_id")
                                 print(f"[GTT_WATCHER] Extracted child_oid={child_oid}")
                                 if child_oid:
+                                    child_oid = str(child_oid)  # Ensure string
                                     # Map child order to same key as parent GTT
                                     self._linker.bind_gtt_child(gid, child_oid)
                                     print(f"[GTT_WATCHER] Bound child order: {child_oid} → parent GTT {gid}")
@@ -80,12 +84,62 @@ class GTTWatcher:
                                     if self._poller:
                                         self._poller.track_order(child_oid)
                                         print(f"[GTT_WATCHER] Started polling child order {child_oid} (WS backup)")
+                                    else:
+                                        print(f"[GTT_WATCHER] ⚠️  Poller not ready yet for {child_oid}")
                         except Exception as e:
                             import traceback
                             print(f"[GTT_WATCHER] Error binding child: {e}")
                             traceback.print_exc()
         except Exception:
             pass
+    
+    def _scan_existing_triggered_gtts(self):
+        """Scan for GTTs that were already triggered before watcher started."""
+        if not self._linker:
+            return
+        
+        print("[GTT_WATCHER] Scanning for already-triggered GTTs...")
+        try:
+            all_gtts = self.kite.get_gtts()
+            for gtt in all_gtts:
+                gid = str(gtt["id"])
+                
+                # Only check GTTs we're tracking
+                if gid not in self._linker.gtt_registry:
+                    continue
+                
+                # If already resolved, skip
+                if gid in self.resolved:
+                    continue
+                
+                # Check if triggered
+                if gtt["status"] == "triggered":
+                    print(f"[GTT_WATCHER] Found pre-existing trigger: {gid}")
+                    self.pending.discard(gid)
+                    self.resolved[gid] = gtt.get("order_id")
+                    
+                    # Extract and track child orders
+                    try:
+                        orders = gtt.get("orders", [])
+                        print(f"[GTT_WATCHER] GTT {gid} has {len(orders)} orders in response")
+                        for o in orders:
+                            result = o.get("result", {}) or {}
+                            order_result = result.get("order_result", {}) or {}
+                            child_oid = order_result.get("order_id")
+                            if child_oid:
+                                child_oid = str(child_oid)
+                                self._linker.bind_gtt_child(gid, child_oid)
+                                print(f"[GTT_WATCHER] Recovered child order: {child_oid} → GTT {gid}")
+                                
+                                if self._poller:
+                                    self._poller.track_order(child_oid)
+                                    print(f"[GTT_WATCHER] Started polling recovered child {child_oid}")
+                    except Exception as e:
+                        print(f"[GTT_WATCHER] Error recovering child orders: {e}")
+                        
+            print("[GTT_WATCHER] Startup scan complete")
+        except Exception as e:
+            print(f"[GTT_WATCHER] Startup scan error: {e}")
 
     def snapshot(self):
         return {
