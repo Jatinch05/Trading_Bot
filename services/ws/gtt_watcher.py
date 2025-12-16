@@ -17,6 +17,11 @@ class GTTWatcher:
 
     def bind_linker(self, linker):
         self._linker = linker
+        # Seed pending from linker when binding
+        if self._linker:
+            for gid in self._linker.gtt_registry.keys():
+                if gid not in self.resolved:
+                    self.pending.add(str(gid))
 
     def start(self):
         if self.running:
@@ -68,6 +73,7 @@ class GTTWatcher:
     def snapshot(self):
         return {
             "running": self.running,
+            "bound": self._linker is not None,
             "pending": list(self.pending),
             "resolved": dict(self.resolved),
             "interval": self.interval,
