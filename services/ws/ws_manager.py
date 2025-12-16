@@ -1,5 +1,7 @@
 # services/ws/ws_manager.py
 from kiteconnect import KiteTicker
+import threading
+import time
 
 class WSManager:
     def __init__(self, api_key, access_token, linker):
@@ -7,6 +9,8 @@ class WSManager:
         self.kws = KiteTicker(api_key, access_token)
         self._credited_orders = set()
         self._events = []  # recent WS events for debugging
+        self._connected = False
+        self._connection_time = None
 
         self.kws.on_ticks = self.on_ticks
         self.kws.on_connect = self.on_connect
@@ -18,7 +22,16 @@ class WSManager:
 
     def start(self):
         self._log("WS start() called; connecting...")
+        self._connection_time = time.time()
         self.kws.connect(threaded=True)
+        
+        # Monitor connection timeout (20 seconds)
+        def check_timeout():
+            time.sleep(20)
+            if not self._connected:
+                self._log("[WS] ❌ Connection timeout after 20s - check token/network")
+        
+        threading.Thread(target=check_timeout, daemon=True).start()
 
     # -------------------------------------------------
     # Event helpers
@@ -36,7 +49,9 @@ class WSManager:
         pass
 
     def on_connect(self, ws, resp):
-        self._log(f"[WS] Connected; resp={resp}")
+        self._connected = True
+        elapsed = time.time() - self._connection_time if self._connection_time else 0
+        self._log(f"✅ [WS] Connected in {elapsed:.1f}s; resp={resp}")
         try:
             ws.subscribe([])  # No instrument ticks needed; order updates are pushed globally
         except Exception as e:
@@ -46,7 +61,9 @@ class WSManager:
         self._log(f"[WS] Closed code={code} reason={reason}")
 
     def on_error(self, ws, code, reason):
-        self._log(f"[WS] Error code={code} reason={reason}")
+        self._log(f"❌ [WS] Error code={code} reason={reason}")
+        self._log(f"   💡 If code=403: Token expired or invalid")
+        self._log(f"   💡 If timeout: Network/firewall issue")
 
     def on_reconnect(self, ws, attempt_count):
         self._log(f"[WS] Reconnecting attempt={attempt_count}")
