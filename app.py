@@ -198,6 +198,12 @@ raw_df = None
 if file:
     raw_df = pd.read_excel(file)
     st.dataframe(raw_df.head(20), width="stretch")
+    # Reset selection state when a new file is uploaded
+    if st.session_state.get("_last_file_name") != getattr(file, "name", None):
+        st.session_state["_last_file_name"] = getattr(file, "name", None)
+        st.session_state["validated_rows"] = []
+        st.session_state["vdf_disp"] = None
+        st.session_state["selected_rows"] = set()
     
     # Validate
     if st.button("✓ Validate Rows"):
@@ -208,7 +214,17 @@ if file:
             
             if not errors:
                 st.success(f"✅ All {len(intents)} rows valid")
-                st.session_state["vdf_disp"] = vdf.copy()
+                # Only set display df if not already edited, to preserve selections across reruns
+                if st.session_state.get("vdf_disp") is None:
+                    st.session_state["vdf_disp"] = vdf.copy()
+                else:
+                    # Update existing df values but preserve the select column
+                    prev = st.session_state["vdf_disp"].copy()
+                    has_select = "select" in prev.columns
+                    merged = vdf.copy()
+                    if has_select:
+                        merged.insert(0, "select", prev.get("select", False))
+                    st.session_state["vdf_disp"] = merged
             else:
                 st.error(f"❌ {len(errors)} rows failed validation")
                 st.dataframe(
@@ -227,6 +243,7 @@ if st.session_state.get("vdf_disp") is not None:
     if "select" not in disp.columns:
         disp.insert(0, "select", False)
     
+    # Provide a stable key and disable autorefresh hint
     edited = st.data_editor(
         disp,
         hide_index=False,
@@ -238,32 +255,47 @@ if st.session_state.get("vdf_disp") is not None:
     st.session_state["vdf_disp"] = edited.copy()
     st.session_state["selected_rows"] = set(edited[edited["select"]].index)
 
-# Execute
-if st.button("🚀 Execute", disabled=(len(st.session_state["selected_rows"]) == 0)):
+col_exec_all, col_exec_sel, col_clear_sel = st.columns([1,1,1])
+
+# Execute All
+exec_all_clicked = col_exec_all.button("🚀 Execute All", disabled=(len(st.session_state.get("validated_rows", [])) == 0))
+
+# Execute Selected
+exec_sel_clicked = col_exec_sel.button("🚀 Execute Selected", disabled=(len(st.session_state.get("selected_rows", set())) == 0))
+
+# Clear Selection to prevent accidental rerun loss
+clear_sel_clicked = col_clear_sel.button("🧹 Clear Selection")
+
+if clear_sel_clicked:
+    if st.session_state.get("vdf_disp") is not None:
+        vdf_tmp = st.session_state["vdf_disp"].copy()
+        if "select" in vdf_tmp.columns:
+            vdf_tmp["select"] = False
+        st.session_state["vdf_disp"] = vdf_tmp
+    st.session_state["selected_rows"] = set()
+
+def _execute_intents(run_intents: list[OrderIntent]):
+    if not live_mode:
+        results = [
+            {"order_id": None, "symbol": i.symbol, "txn_type": i.txn_type, "qty": i.qty, "status": "DRY-RUN"}
+            for i in run_intents
+        ]
+    else:
+        results = execute_bundle(kite=client, intents=run_intents, linker=linker, live=True)
+    st.subheader("Execution Results")
+    st.dataframe(pd.DataFrame(results), width="stretch")
+
+if exec_all_clicked and st.session_state.get("validated_rows"):
+    intents = st.session_state["validated_rows"]
+    _execute_intents(intents)
+
+if exec_sel_clicked and st.session_state.get("selected_rows"):
     rows = [
         st.session_state["validated_rows"][i].__dict__
         for i in st.session_state["selected_rows"]
     ]
     intents = [OrderIntent(**r) for r in rows]
-    
-    if not live_mode:
-        # Dry-run
-        results = [
-            {
-                "order_id": None,
-                "symbol": i.symbol,
-                "txn_type": i.txn_type,
-                "qty": i.qty,
-                "status": "DRY-RUN",
-            }
-            for i in intents
-        ]
-    else:
-        # Live execution
-        results = execute_bundle(kite=client, intents=intents, linker=linker, live=True)
-    
-    st.subheader("Execution Results")
-    st.dataframe(pd.DataFrame(results), width="stretch")
+    _execute_intents(intents)
 
 
 # =========================================================
