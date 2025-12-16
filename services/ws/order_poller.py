@@ -46,14 +46,18 @@ class OrderPoller:
             print(f"[ORDER_POLLER] Tracking order {order_id}")
     
     def _poll_loop(self):
-        """Main polling loop - runs every 2 seconds."""
+        """Main polling loop - runs every 5 seconds to avoid rate limits."""
         while self._running:
             try:
                 self._check_orders()
             except Exception as e:
-                print(f"[ORDER_POLLER] Poll error: {e}")
+                error_msg = str(e)
+                if "Too many requests" in error_msg or "rate limit" in error_msg.lower():
+                    print(f"[ORDER_POLLER] ⚠️  Rate limit hit, backing off...")
+                else:
+                    print(f"[ORDER_POLLER] Poll error: {e}")
             
-            time.sleep(2)
+            time.sleep(5)  # Poll every 5 seconds instead of 2 to avoid rate limits
     
     def _check_orders(self):
         """Check status of all tracked orders."""
