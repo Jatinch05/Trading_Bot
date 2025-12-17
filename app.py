@@ -268,7 +268,9 @@ if st.session_state.get("vdf_disp") is not None:
     )
     
     st.session_state["vdf_disp"] = edited.copy()
-    st.session_state["selected_rows"] = set(edited[edited["select"]].index)
+    # Ensure select column is boolean and handle NaN
+    select_mask = edited["select"].fillna(False).astype(bool)
+    st.session_state["selected_rows"] = set(edited[select_mask].index)
 
 col_exec_all, col_exec_sel, col_clear_sel = st.columns([1,1,1])
 
@@ -285,7 +287,7 @@ if clear_sel_clicked:
     if st.session_state.get("vdf_disp") is not None:
         vdf_tmp = st.session_state["vdf_disp"].copy()
         if "select" in vdf_tmp.columns:
-            vdf_tmp["select"] = False
+            vdf_tmp["select"] = False  # explicitly False (not NaN)
         st.session_state["vdf_disp"] = vdf_tmp
     st.session_state["selected_rows"] = set()
 
