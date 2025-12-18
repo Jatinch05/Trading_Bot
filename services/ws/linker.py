@@ -1,9 +1,14 @@
 # services/ws/linker.py
 from collections import defaultdict, deque
 import threading
+import json
+from pathlib import Path
 from typing import Optional
 
 class OrderLinker:
+    # Persistence file for state recovery across app restarts
+    STATE_FILE = Path("linker_state.json")
+    
     def __init__(self):
         self.buy_credits = defaultdict(int)     # key -> filled qty
         self.sell_queues = defaultdict(deque)   # key -> deque[OrderIntent]
@@ -35,6 +40,7 @@ class OrderLinker:
         gtt_id = str(gtt_id)
         with self._lock:
             self.gtt_registry[gtt_id] = self._key(intent)
+        self.save_state()  # Persist after registration
 
     def _apply_credit(self, order_id: str, filled_qty: int, source: str):
         """Apply BUY fill credit once per order_id and release queued SELLs.
@@ -114,6 +120,8 @@ class OrderLinker:
                 released.append(sell)
                 print(f"[LINKER] Released SELL (on queue): {sell.symbol} qty={sell.qty}, remaining credits={self.buy_credits[key]}")
 
+        self.save_state()  # Persist after queuing
+        
         if released and self._release_cb:
             print(f"[LINKER] Calling release callback with {len(released)} SELLs (from queue_sell)")
             self._release_cb(released)
@@ -136,3 +144,47 @@ class OrderLinker:
             "credited_count_by_key": {_k(k): v for k, v in self._credited_count_by_key.items()},
             "credited_order_ids_sample": sorted(list(self._credited_order_ids))[:20],
         }
+    def save_state(self):
+        """Persist critical state to survive app restarts."""
+        try:
+            with self._lock:
+                # Convert tuple keys to strings and serialize OrderIntent objects
+                state = {
+                    "gtt_registry": {gtt_id: list(key) for gtt_id, key in self.gtt_registry.items()},
+                    "buy_registry": {oid: list(key) for oid, key in self.buy_registry.items()},
+                    "sell_queues": {
+                        "|".join(map(str, key)): [intent.model_dump() for intent in queue]
+                        for key, queue in self.sell_queues.items()
+                    },
+                }
+            
+            self.STATE_FILE.write_text(json.dumps(state, indent=2))
+            print(f"[LINKER] State saved to {self.STATE_FILE}")
+        except Exception as e:
+            print(f"[LINKER] ⚠️ Failed to save state: {e}")
+
+    def load_state(self):
+        """Restore state from previous session."""
+        if not self.STATE_FILE.exists():
+            print("[LINKER] No saved state found")
+            return
+        
+        try:
+            from models import OrderIntent
+            state = json.loads(self.STATE_FILE.read_text())
+            
+            with self._lock:
+                # Restore gtt_registry and buy_registry
+                self.gtt_registry = {gtt_id: tuple(key) for gtt_id, key in state.get("gtt_registry", {}).items()}
+                self.buy_registry = {oid: tuple(key) for oid, key in state.get("buy_registry", {}).items()}
+                
+                # Restore sell_queues with OrderIntent objects
+                for key_str, intents_data in state.get("sell_queues", {}).items():
+                    key_parts = key_str.split("|")
+                    key = (key_parts[0], key_parts[1], key_parts[2])
+                    self.sell_queues[key] = deque([OrderIntent(**intent_dict) for intent_dict in intents_data])
+            
+            print(f"[LINKER] ✅ State restored: {len(self.gtt_registry)} GTTs, {len(self.sell_queues)} queues")
+        except Exception as e:
+            print(f"[LINKER] ⚠️ Failed to load state: {e}")
+            # Continue with empty state if load fails

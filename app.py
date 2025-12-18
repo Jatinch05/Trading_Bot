@@ -79,6 +79,8 @@ def ensure_linker() -> OrderLinker:
     """Ensure linker exists and has release callback."""
     if st.session_state["linker"] is None:
         st.session_state["linker"] = OrderLinker()
+        # Restore state from previous session
+        st.session_state["linker"].load_state()
     return st.session_state["linker"]
 
 
