@@ -142,6 +142,26 @@ class OrderLinker:
             if isinstance(k, tuple):
                 return "|".join(map(str, k))
             return str(k)
+        
+        # Check which state files exist
+        old_locations = [
+            Path("linker_state.json"),
+            Path.cwd() / "linker_state.json",
+            Path(__file__).parent / "linker_state.json",
+            Path(__file__).parent.parent / "linker_state.json",
+        ]
+        
+        file_status = {
+            "new_path": {
+                "path": str(self.STATE_FILE),
+                "exists": self.STATE_FILE.exists(),
+            },
+            "old_paths": [
+                {"path": str(p.absolute()), "exists": p.exists()}
+                for p in old_locations
+            ]
+        }
+        
         return {
             # dicts keyed by tuples won't render in st.json; stringify keys
             "credits": {_k(k): v for k, v in self.buy_credits.items()},
@@ -153,6 +173,7 @@ class OrderLinker:
             "credited_qty_by_key": {_k(k): v for k, v in self._credited_qty_by_key.items()},
             "credited_count_by_key": {_k(k): v for k, v in self._credited_count_by_key.items()},
             "credited_order_ids_sample": sorted(list(self._credited_order_ids))[:20],
+            "state_file": file_status,
         }
     def save_state(self):
         """Persist critical state to survive app restarts."""
