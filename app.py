@@ -381,7 +381,9 @@ with st.expander("🔧 Debug Panels", expanded=False):
     with col1:
         if st.button("🔍 Force Save State"):
             result = linker.save_state()
-            if "✅" in result:
+            if result is None:
+                st.info("Save completed (no message)")
+            elif "✅" in result:
                 st.success(result)
             else:
                 st.error(result)
