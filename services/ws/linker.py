@@ -152,6 +152,10 @@ class OrderLinker:
                 state = {
                     "gtt_registry": {gtt_id: list(key) for gtt_id, key in self.gtt_registry.items()},
                     "buy_registry": {oid: list(key) for oid, key in self.buy_registry.items()},
+                    "buy_credits": {"|".join(map(str, k)): v for k, v in self.buy_credits.items()},
+                    "credited_order_ids": list(self._credited_order_ids),
+                    "credited_qty_by_key": {"|".join(map(str, k)): v for k, v in self._credited_qty_by_key.items()},
+                    "credited_count_by_key": {"|".join(map(str, k)): v for k, v in self._credited_count_by_key.items()},
                     "sell_queues": {
                         "|".join(map(str, key)): [intent.model_dump() for intent in queue]
                         for key, queue in self.sell_queues.items()
@@ -177,6 +181,16 @@ class OrderLinker:
                 # Restore gtt_registry and buy_registry
                 self.gtt_registry = {gtt_id: tuple(key) for gtt_id, key in state.get("gtt_registry", {}).items()}
                 self.buy_registry = {oid: tuple(key) for oid, key in state.get("buy_registry", {}).items()}
+                self.buy_credits = defaultdict(int, {
+                    tuple(k.split("|")): v for k, v in state.get("buy_credits", {}).items()
+                })
+                self._credited_order_ids = set(state.get("credited_order_ids", []))
+                self._credited_qty_by_key = defaultdict(int, {
+                    tuple(k.split("|")): v for k, v in state.get("credited_qty_by_key", {}).items()
+                })
+                self._credited_count_by_key = defaultdict(int, {
+                    tuple(k.split("|")): v for k, v in state.get("credited_count_by_key", {}).items()
+                })
                 
                 # Restore sell_queues with OrderIntent objects
                 for key_str, intents_data in state.get("sell_queues", {}).items():
