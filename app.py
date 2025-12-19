@@ -374,6 +374,25 @@ with st.expander("🔧 Debug Panels", expanded=False):
     st.markdown("### Linker State")
     st.json(linker.snapshot())
     
+    # Debug: Test save/load
+    st.markdown("### State File Debug")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔍 Force Save State"):
+            linker.save_state()
+            st.success("Save triggered! Check terminal logs.")
+    with col2:
+        if st.button("🔄 Force Load State"):
+            linker.load_state()
+            st.info("Load triggered! Check terminal logs.")
+    
+    # Show file system info
+    import os
+    from pathlib import Path
+    st.markdown("#### File System Info")
+    st.text(f"CWD: {os.getcwd()}")
+    st.text(f"Files in CWD: {os.listdir('.')[:10]}")
+    
     if st.session_state.get("gtt"):
         st.markdown("### GTT Watcher State")
         st.json(st.session_state["gtt"].snapshot())
