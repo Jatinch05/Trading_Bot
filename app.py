@@ -4,6 +4,7 @@
 import streamlit as st
 import os
 import sys
+import json
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
 
@@ -379,19 +380,32 @@ with st.expander("🔧 Debug Panels", expanded=False):
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔍 Force Save State"):
-            linker.save_state()
-            st.success("Save triggered! Check terminal logs.")
+            result = linker.save_state()
+            if "✅" in result:
+                st.success(result)
+            else:
+                st.error(result)
     with col2:
         if st.button("🔄 Force Load State"):
             linker.load_state()
-            st.info("Load triggered! Check terminal logs.")
+            st.info("Load triggered! Check linker state above.")
     
     # Show file system info
     import os
     from pathlib import Path
     st.markdown("#### File System Info")
     st.text(f"CWD: {os.getcwd()}")
-    st.text(f"Files in CWD: {os.listdir('.')[:10]}")
+    files_in_cwd = os.listdir('.')
+    st.text(f"Files in CWD ({len(files_in_cwd)}): {files_in_cwd[:15]}")
+    
+    # Check for state file
+    state_file = Path("/mount/src/trading_bot/linker_state.json")
+    if state_file.exists():
+        st.success(f"✅ State file found: {state_file}")
+        with open(state_file) as f:
+            st.json(json.load(f))
+    else:
+        st.warning(f"❌ State file not found: {state_file}")
     
     if st.session_state.get("gtt"):
         st.markdown("### GTT Watcher State")

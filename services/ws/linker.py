@@ -194,12 +194,16 @@ class OrderLinker:
                 }
             
             self.STATE_FILE.write_text(json.dumps(state, indent=2))
-            print(f"[LINKER] ✅ State saved to {self.STATE_FILE}")
+            msg = f"✅ State saved to {self.STATE_FILE}"
+            print(f"[LINKER] {msg}")
             print(f"[LINKER]   gtt_registry={len(self.gtt_registry)}, buy_registry={len(self.buy_registry)}, queues={len(self.sell_queues)}")
+            return msg
         except Exception as e:
-            print(f"[LINKER] ⚠️ Failed to save state: {e}")
             import traceback
+            msg = f"❌ Failed to save state: {e}"
+            print(f"[LINKER] {msg}")
             traceback.print_exc()
+            return msg
 
     def load_state(self):
         """Restore state from previous session."""
