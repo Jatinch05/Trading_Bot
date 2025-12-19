@@ -120,8 +120,60 @@ class OrderLinker:
         key = self._key(intent)
         with self._lock:
             q = self.sell_queues[key]
-            q.append(intent)
-            print(f"[LINKER] Queued SELL: {intent.symbol} qty={intent.qty} tag={intent.tag}")
+            # Deduplicate identical SELL intents for the same key to avoid double placement
+            sig = (
+                intent.symbol,
+                intent.exchange,
+                intent.qty,
+                intent.order_type,
+                intent.price,
+                intent.trigger_price,
+                intent.product,
+                intent.validity,
+                intent.variety,
+                intent.disclosed_qty,
+                intent.tag,
+                intent.gtt,
+                intent.gtt_type,
+                intent.gtt_trigger,
+                intent.gtt_limit,
+                intent.gtt_trigger_1,
+                intent.gtt_limit_1,
+                intent.gtt_trigger_2,
+                intent.gtt_limit_2,
+            )
+            existing_sigs = {
+                (
+                    s.symbol,
+                    s.exchange,
+                    s.qty,
+                    s.order_type,
+                    s.price,
+                    s.trigger_price,
+                    s.product,
+                    s.validity,
+                    s.variety,
+                    s.disclosed_qty,
+                    s.tag,
+                    s.gtt,
+                    s.gtt_type,
+                    getattr(s, "gtt_trigger", None),
+                    getattr(s, "gtt_limit", None),
+                    getattr(s, "gtt_trigger_1", None),
+                    getattr(s, "gtt_limit_1", None),
+                    getattr(s, "gtt_trigger_2", None),
+                    getattr(s, "gtt_limit_2", None),
+                )
+                for s in q
+            }
+
+            if sig in existing_sigs:
+                print(
+                    f"[LINKER] ⚠️ Duplicate SELL skipped: {intent.symbol} qty={intent.qty} tag={intent.tag}"
+                )
+            else:
+                q.append(intent)
+                print(f"[LINKER] Queued SELL: {intent.symbol} qty={intent.qty} tag={intent.tag}")
 
             # Immediately check if existing credits can release SELLs
             while q and self.buy_credits[key] >= q[0].qty:
