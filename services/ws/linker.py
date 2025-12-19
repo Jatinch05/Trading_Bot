@@ -258,8 +258,10 @@ class OrderLinker:
                     key = (key_parts[0], key_parts[1], key_parts[2])
                     self.sell_queues[key] = deque([OrderIntent(**intent_dict) for intent_dict in intents_data])
             
-            print(f"[LINKER] ✅ State restored from {self.STATE_FILE}")
-            print(f"[LINKER]   gtt_registry={len(self.gtt_registry)}, buy_registry={len(self.buy_registry)}, queues={len(self.sell_queues)}")            print(f"[LINKER]   state_file_used: {state_file_to_load.absolute()}")        except Exception as e:
+            print(f"[LINKER] ✅ State restored from {state_file_to_load.absolute()}")
+            print(f"[LINKER]   gtt_registry={len(self.gtt_registry)}, buy_registry={len(self.buy_registry)}, queues={len(self.sell_queues)}")
+            print(f"[LINKER]   state_file_used: {state_file_to_load.absolute()}")
+        except Exception as e:
             print(f"[LINKER] ⚠️ Failed to load state: {e}")
             import traceback
             traceback.print_exc()
