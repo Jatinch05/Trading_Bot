@@ -182,13 +182,39 @@ class OrderLinker:
 
     def load_state(self):
         """Restore state from previous session."""
-        if not self.STATE_FILE.exists():
-            print(f"[LINKER] ℹ️  No saved state found at {self.STATE_FILE}")
+        import os
+        
+        # Migration: check multiple possible old locations
+        old_locations = [
+            Path("linker_state.json"),  # Relative to current working directory
+            Path.cwd() / "linker_state.json",  # Explicit cwd
+            Path(__file__).parent / "linker_state.json",  # In services/ws/
+            Path(__file__).parent.parent / "linker_state.json",  # In services/
+        ]
+        
+        state_file_to_load = None
+        
+        # Try new absolute path first
+        if self.STATE_FILE.exists():
+            state_file_to_load = self.STATE_FILE
+            print(f"[LINKER] Found state at new path: {state_file_to_load}")
+        else:
+            # Look for old state file at various locations
+            for old_path in old_locations:
+                if old_path.exists():
+                    print(f"[LINKER] Found old state file at: {old_path.absolute()}")
+                    state_file_to_load = old_path
+                    break
+        
+        if state_file_to_load is None:
+            print(f"[LINKER] ℹ️  No saved state found")
+            print(f"[LINKER]   Checked: {self.STATE_FILE}")
+            print(f"[LINKER]   Checked cwd: {Path.cwd() / 'linker_state.json'}")
             return
         
         try:
             from models import OrderIntent
-            state = json.loads(self.STATE_FILE.read_text())
+            state = json.loads(state_file_to_load.read_text())
             
             with self._lock:
                 # Restore gtt_registry and buy_registry
