@@ -23,6 +23,8 @@ class OrderLinker:
         self._credited_count_by_key = defaultdict(int)
         # Protect credits/queues/releases across background threads
         self._lock = threading.Lock()
+        # Debug: show path on init
+        print(f"[LINKER] STATE_FILE configured: {self.STATE_FILE}")
 
     def set_release_callback(self, cb):
         self._release_cb = cb
