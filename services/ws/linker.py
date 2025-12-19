@@ -33,6 +33,7 @@ class OrderLinker:
     def register_buy(self, order_id, intent):
         with self._lock:
             self.buy_registry[str(order_id)] = self._key(intent)
+        self.save_state()
 
     def register_gtt_buy(self, gtt_id, intent):
         """Register a GTT BUY order; child order will be mapped when triggered."""
@@ -54,6 +55,7 @@ class OrderLinker:
             return []
 
         released = []
+        state_changed = False
         with self._lock:
             if oid in self._credited_order_ids:
                 print(f"[LINKER] Duplicate credit ignored: order_id={oid} source={source}")
@@ -68,6 +70,7 @@ class OrderLinker:
             self.buy_credits[key] += qty
             self._credited_qty_by_key[key] += qty
             self._credited_count_by_key[key] += 1
+            state_changed = True
             print(f"[LINKER] Credited {qty} to key {key} (source={source}), total credits={self.buy_credits[key]}")
 
             q = self.sell_queues[key]
@@ -76,6 +79,9 @@ class OrderLinker:
                 self.buy_credits[key] -= sell.qty
                 released.append(sell)
                 print(f"[LINKER] Released SELL: {sell.symbol} qty={sell.qty}, remaining credits={self.buy_credits[key]}")
+
+        if state_changed or released:
+            self.save_state()
 
         return released
 
@@ -98,6 +104,7 @@ class OrderLinker:
                 print(f"[LINKER] Mapped child {child_order_id} to key {key}")
             else:
                 print(f"[LINKER] ⚠️  GTT {gtt_id} not found in gtt_registry. Available: {list(self.gtt_registry.keys())}")
+        self.save_state()
 
     def credit_by_order_id(self, order_id: str, qty: int):
         """Manually add credit by known buy order_id (e.g., from GTT child order events)."""
