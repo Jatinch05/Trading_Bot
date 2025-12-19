@@ -7,7 +7,8 @@ from typing import Optional
 
 class OrderLinker:
     # Persistence file for state recovery across app restarts
-    STATE_FILE = Path("linker_state.json")
+    # Use absolute path to ensure it works regardless of working directory
+    STATE_FILE = Path(__file__).parent.parent.parent / "linker_state.json"
     
     def __init__(self):
         self.buy_credits = defaultdict(int)     # key -> filled qty
@@ -170,14 +171,17 @@ class OrderLinker:
                 }
             
             self.STATE_FILE.write_text(json.dumps(state, indent=2))
-            print(f"[LINKER] State saved to {self.STATE_FILE}")
+            print(f"[LINKER] ✅ State saved to {self.STATE_FILE}")
+            print(f"[LINKER]   gtt_registry={len(self.gtt_registry)}, buy_registry={len(self.buy_registry)}, queues={len(self.sell_queues)}")
         except Exception as e:
             print(f"[LINKER] ⚠️ Failed to save state: {e}")
+            import traceback
+            traceback.print_exc()
 
     def load_state(self):
         """Restore state from previous session."""
         if not self.STATE_FILE.exists():
-            print("[LINKER] No saved state found")
+            print(f"[LINKER] ℹ️  No saved state found at {self.STATE_FILE}")
             return
         
         try:
@@ -205,7 +209,10 @@ class OrderLinker:
                     key = (key_parts[0], key_parts[1], key_parts[2])
                     self.sell_queues[key] = deque([OrderIntent(**intent_dict) for intent_dict in intents_data])
             
-            print(f"[LINKER] ✅ State restored: {len(self.gtt_registry)} GTTs, {len(self.sell_queues)} queues")
+            print(f"[LINKER] ✅ State restored from {self.STATE_FILE}")
+            print(f"[LINKER]   gtt_registry={len(self.gtt_registry)}, buy_registry={len(self.buy_registry)}, queues={len(self.sell_queues)}")
         except Exception as e:
             print(f"[LINKER] ⚠️ Failed to load state: {e}")
+            import traceback
+            traceback.print_exc()
             # Continue with empty state if load fails
