@@ -377,7 +377,7 @@ with st.expander("🔧 Debug Panels", expanded=False):
     
     # Debug: Test save/load
     st.markdown("### State File Debug")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🔍 Force Save State"):
             result = linker.save_state()
@@ -391,6 +391,10 @@ with st.expander("🔧 Debug Panels", expanded=False):
         if st.button("🔄 Force Load State"):
             linker.load_state()
             st.info("Load triggered! Check linker state above.")
+    with col3:
+        if st.button("🧹 Clear Linker State"):
+            msg = linker.reset_state()
+            st.warning(msg)
     
     # Show file system info
     import os

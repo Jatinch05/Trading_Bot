@@ -26,6 +26,49 @@ class OrderLinker:
         # Debug: show path on init
         print(f"[LINKER] STATE_FILE configured: {self.STATE_FILE}")
 
+    # -----------------------------
+    # Internal helpers
+    # -----------------------------
+    def _intent_signature(self, intent):
+        return (
+            intent.symbol,
+            intent.exchange,
+            intent.qty,
+            intent.order_type,
+            intent.price,
+            intent.trigger_price,
+            intent.product,
+            intent.validity,
+            intent.variety,
+            intent.disclosed_qty,
+            intent.tag,
+            intent.gtt,
+            intent.gtt_type,
+            getattr(intent, "gtt_trigger", None),
+            getattr(intent, "gtt_limit", None),
+            getattr(intent, "gtt_trigger_1", None),
+            getattr(intent, "gtt_limit_1", None),
+            getattr(intent, "gtt_trigger_2", None),
+            getattr(intent, "gtt_limit_2", None),
+        )
+
+    def _dedupe_queues_locked(self):
+        """Remove duplicate SELL intents per key, preserving order."""
+        removed_total = 0
+        for key, q in list(self.sell_queues.items()):
+            seen = set()
+            unique = deque()
+            for intent in q:
+                sig = self._intent_signature(intent)
+                if sig in seen:
+                    removed_total += 1
+                    continue
+                seen.add(sig)
+                unique.append(intent)
+            self.sell_queues[key] = unique
+        if removed_total:
+            print(f"[LINKER] De-duplicated SELL queues; removed {removed_total} duplicate intents")
+
     def set_release_callback(self, cb):
         self._release_cb = cb
 
@@ -121,51 +164,8 @@ class OrderLinker:
         with self._lock:
             q = self.sell_queues[key]
             # Deduplicate identical SELL intents for the same key to avoid double placement
-            sig = (
-                intent.symbol,
-                intent.exchange,
-                intent.qty,
-                intent.order_type,
-                intent.price,
-                intent.trigger_price,
-                intent.product,
-                intent.validity,
-                intent.variety,
-                intent.disclosed_qty,
-                intent.tag,
-                intent.gtt,
-                intent.gtt_type,
-                intent.gtt_trigger,
-                intent.gtt_limit,
-                intent.gtt_trigger_1,
-                intent.gtt_limit_1,
-                intent.gtt_trigger_2,
-                intent.gtt_limit_2,
-            )
-            existing_sigs = {
-                (
-                    s.symbol,
-                    s.exchange,
-                    s.qty,
-                    s.order_type,
-                    s.price,
-                    s.trigger_price,
-                    s.product,
-                    s.validity,
-                    s.variety,
-                    s.disclosed_qty,
-                    s.tag,
-                    s.gtt,
-                    s.gtt_type,
-                    getattr(s, "gtt_trigger", None),
-                    getattr(s, "gtt_limit", None),
-                    getattr(s, "gtt_trigger_1", None),
-                    getattr(s, "gtt_limit_1", None),
-                    getattr(s, "gtt_trigger_2", None),
-                    getattr(s, "gtt_limit_2", None),
-                )
-                for s in q
-            }
+            sig = self._intent_signature(intent)
+            existing_sigs = {self._intent_signature(s) for s in q}
 
             if sig in existing_sigs:
                 print(
@@ -313,6 +313,9 @@ class OrderLinker:
                     key_parts = key_str.split("|")
                     key = (key_parts[0], key_parts[1], key_parts[2])
                     self.sell_queues[key] = deque([OrderIntent(**intent_dict) for intent_dict in intents_data])
+
+                # Compact duplicates that may have accumulated in prior runs
+                self._dedupe_queues_locked()
             
             print(f"[LINKER] ✅ State restored from {state_file_to_load.absolute()}")
             print(f"[LINKER]   gtt_registry={len(self.gtt_registry)}, buy_registry={len(self.buy_registry)}, queues={len(self.sell_queues)}")
@@ -322,3 +325,20 @@ class OrderLinker:
             import traceback
             traceback.print_exc()
             # Continue with empty state if load fails
+
+    # -----------------------------
+    # Maintenance helpers (Debug Panel)
+    # -----------------------------
+    def reset_state(self):
+        """Clear all linker state (queues, registries, credits)."""
+        with self._lock:
+            self.buy_credits.clear()
+            self.sell_queues.clear()
+            self.buy_registry.clear()
+            self.gtt_registry.clear()
+            self._credited_order_ids.clear()
+            self._credited_qty_by_key.clear()
+            self._credited_count_by_key.clear()
+        self.save_state()
+        print("[LINKER] ⚠️ All linker state cleared")
+        return "All linker state cleared"
