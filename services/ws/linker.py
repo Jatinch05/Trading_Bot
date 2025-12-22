@@ -23,6 +23,9 @@ class OrderLinker:
         self._credited_count_by_key = defaultdict(int)
         # Protect credits/queues/releases across background threads
         self._lock = threading.Lock()
+        # If WS order_update arrives before GTT watcher maps child->key,
+        # stash it here and apply once mapping is available.
+        self._pending_unmapped_fills = {}  # order_id -> filled_qty (max)
         # Debug: show path on init
         print(f"[LINKER] STATE_FILE configured: {self.STATE_FILE}")
 
@@ -75,43 +78,80 @@ class OrderLinker:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def _try_acquire_credit_lock(self, oid: str) -> bool:
-        """Cross-session/process idempotency guard.
+    def _try_acquire_credit_inflight(self, oid: str) -> tuple[bool, str, Optional[dict]]:
+        """Cross-session/process idempotency for BUY credit (two-phase).
 
-        Returns True if this process should apply credit for oid, False if some
-        other session/process already did.
+        We acquire an `.inprogress` lock before crediting so only one session
+        can credit at a time, and we only promote to `.done` after state is
+        successfully saved.
 
-        IMPORTANT: Call this only after the order_id is mappable to a key,
-        otherwise we'd block legitimate later crediting (e.g., GTT child mapped
-        slightly after WS event).
+        This avoids the failure mode where a permanent lock was created but the
+        credit never got persisted (refresh/crash), which would make credits look
+        like 0 forever.
         """
         import hashlib
         import datetime as _dt
+        import os
 
         lock_dir = self._credit_lock_dir()
         h = hashlib.sha256(str(oid).encode("utf-8")).hexdigest()
-        lock_path = lock_dir / f"{h}.lock"
+        done = lock_dir / f"{h}.done"
+        inflight = lock_dir / f"{h}.inprogress"
 
-        # Stale cleanup (best-effort)
-        ttl_seconds = 7 * 24 * 60 * 60  # 7d
-        if lock_path.exists():
+        done_ttl = 7 * 24 * 60 * 60   # 7d
+        inflight_ttl = 5 * 60         # 5m
+
+        def _is_stale(path, ttl):
             try:
                 now_ts = _dt.datetime.now(_dt.timezone.utc).timestamp()
-                age = now_ts - lock_path.stat().st_mtime
-                if age > ttl_seconds:
-                    lock_path.unlink(missing_ok=True)
+                age = now_ts - path.stat().st_mtime
+                return age > ttl
             except Exception:
                 return False
 
+        if done.exists() and not _is_stale(done, done_ttl):
+            return False, "done", None
+        if done.exists() and _is_stale(done, done_ttl):
+            try:
+                done.unlink(missing_ok=True)
+            except Exception:
+                return False, "done_locked", None
+
+        if inflight.exists() and not _is_stale(inflight, inflight_ttl):
+            return False, "inflight", None
+        if inflight.exists() and _is_stale(inflight, inflight_ttl):
+            try:
+                inflight.unlink(missing_ok=True)
+            except Exception:
+                return False, "inflight_locked", None
+
         try:
-            with open(lock_path, "x", encoding="utf-8") as f:
+            with open(inflight, "x", encoding="utf-8") as f:
                 f.write(str(oid))
-            return True
+            return True, "acquired", {"done": done, "inflight": inflight, "os": os}
         except FileExistsError:
-            return False
+            return False, "inflight", None
         except Exception:
-            # On unexpected FS error, do not risk duplicates
-            return False
+            return False, "fs_error", None
+
+    def _promote_credit_inflight(self, ctx: dict) -> None:
+        try:
+            ctx["os"].replace(str(ctx["inflight"]), str(ctx["done"]))
+        except Exception:
+            try:
+                ctx["done"].write_text("done")
+            except Exception:
+                pass
+            try:
+                ctx["inflight"].unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _release_credit_inflight(self, ctx: dict) -> None:
+        try:
+            ctx["inflight"].unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def set_release_callback(self, cb):
         self._release_cb = cb
@@ -146,6 +186,7 @@ class OrderLinker:
 
         released = []
         state_changed = False
+        credit_ctx = None
         with self._lock:
             if oid in self._credited_order_ids:
                 print(f"[LINKER] Duplicate credit ignored: order_id={oid} source={source}")
@@ -153,13 +194,18 @@ class OrderLinker:
 
             key = self.buy_registry.get(oid)
             if not key:
-                # If we can't map this order_id yet, don't mark it credited
+                # If we can't map this order_id yet, don't mark it credited.
+                # Buffer it, so when GTT watcher binds child->key we can credit.
+                prev = self._pending_unmapped_fills.get(oid, 0)
+                if qty > prev:
+                    self._pending_unmapped_fills[oid] = qty
+                    print(f"[LINKER] Buffered unmapped fill: order_id={oid} qty={qty} source={source}")
                 return []
 
-            # Cross-session dedupe: if another Streamlit session already credited
-            # this order_id, do nothing here (prevents double release).
-            if not self._try_acquire_credit_lock(oid):
-                print(f"[LINKER] Cross-session credit lock exists; skipping order_id={oid} source={source}")
+            # Cross-session dedupe: only one session/process should credit.
+            ok, reason, credit_ctx = self._try_acquire_credit_inflight(oid)
+            if not ok:
+                print(f"[LINKER] Cross-session credit lock ({reason}); skipping order_id={oid} source={source}")
                 return []
 
             self._credited_order_ids.add(oid)
@@ -177,7 +223,15 @@ class OrderLinker:
                 print(f"[LINKER] Released SELL: {sell.symbol} qty={sell.qty}, remaining credits={self.buy_credits[key]}")
 
         if state_changed or released:
-            self.save_state()
+            save_msg = self.save_state()
+            # Only mark credit as done once state is persisted.
+            if credit_ctx and isinstance(save_msg, str) and "✅" in save_msg:
+                self._promote_credit_inflight(credit_ctx)
+            elif credit_ctx:
+                self._release_credit_inflight(credit_ctx)
+        elif credit_ctx:
+            # No state change? release lock.
+            self._release_credit_inflight(credit_ctx)
 
         return released
 
@@ -201,6 +255,16 @@ class OrderLinker:
             else:
                 print(f"[LINKER] ⚠️  GTT {gtt_id} not found in gtt_registry. Available: {list(self.gtt_registry.keys())}")
         self.save_state()
+
+        # If we saw a WS fill before mapping, apply it now.
+        pending_qty = None
+        with self._lock:
+            pending_qty = self._pending_unmapped_fills.pop(child_order_id, None)
+        if pending_qty:
+            print(f"[LINKER] Applying buffered fill for {child_order_id}: qty={pending_qty}")
+            released = self._apply_credit(child_order_id, pending_qty, source="ws_buffer")
+            if released and self._release_cb:
+                self._release_cb(released)
 
     def credit_by_order_id(self, order_id: str, qty: int):
         """Manually add credit by known buy order_id (e.g., from GTT child order events)."""
