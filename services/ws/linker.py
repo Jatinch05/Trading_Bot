@@ -69,6 +69,50 @@ class OrderLinker:
         if removed_total:
             print(f"[LINKER] De-duplicated SELL queues; removed {removed_total} duplicate intents")
 
+    def _credit_lock_dir(self) -> Path:
+        # .../services/ws/linker.py -> parents[2] is repo root
+        d = Path(__file__).resolve().parents[2] / ".runtime" / "credited_buys"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _try_acquire_credit_lock(self, oid: str) -> bool:
+        """Cross-session/process idempotency guard.
+
+        Returns True if this process should apply credit for oid, False if some
+        other session/process already did.
+
+        IMPORTANT: Call this only after the order_id is mappable to a key,
+        otherwise we'd block legitimate later crediting (e.g., GTT child mapped
+        slightly after WS event).
+        """
+        import hashlib
+        import datetime as _dt
+
+        lock_dir = self._credit_lock_dir()
+        h = hashlib.sha256(str(oid).encode("utf-8")).hexdigest()
+        lock_path = lock_dir / f"{h}.lock"
+
+        # Stale cleanup (best-effort)
+        ttl_seconds = 7 * 24 * 60 * 60  # 7d
+        if lock_path.exists():
+            try:
+                now_ts = _dt.datetime.now(_dt.timezone.utc).timestamp()
+                age = now_ts - lock_path.stat().st_mtime
+                if age > ttl_seconds:
+                    lock_path.unlink(missing_ok=True)
+            except Exception:
+                return False
+
+        try:
+            with open(lock_path, "x", encoding="utf-8") as f:
+                f.write(str(oid))
+            return True
+        except FileExistsError:
+            return False
+        except Exception:
+            # On unexpected FS error, do not risk duplicates
+            return False
+
     def set_release_callback(self, cb):
         self._release_cb = cb
 
@@ -110,6 +154,12 @@ class OrderLinker:
             key = self.buy_registry.get(oid)
             if not key:
                 # If we can't map this order_id yet, don't mark it credited
+                return []
+
+            # Cross-session dedupe: if another Streamlit session already credited
+            # this order_id, do nothing here (prevents double release).
+            if not self._try_acquire_credit_lock(oid):
+                print(f"[LINKER] Cross-session credit lock exists; skipping order_id={oid} source={source}")
                 return []
 
             self._credited_order_ids.add(oid)

@@ -21,6 +21,7 @@ from services.results import dataframe_to_excel_download
 from services.ws.linker import OrderLinker
 from services.ws.ws_manager import WSManager
 from services.ws.gtt_watcher import GTTWatcher
+from services.ws.runtime import ensure_workers, stop_workers
 from services import pnl_monitor
 
 
@@ -114,9 +115,9 @@ def _install_release_callback(linker: OrderLinker, client):
 
     def _place_released(sells: list):
         try:
-            print(f"[APP] Placing {len(sells)} released SELL(s)")
-            execute_released_sells(kite=client, sells=sells, live=True)
-            print(f"[APP] ✅ Placed {len(sells)} released SELL(s)")
+            print(f"[APP] Placing {len(sells)} released SELL(s) (requested)")
+            results = execute_released_sells(kite=client, sells=sells, live=True)
+            print(f"[APP] ✅ Placed {len(results or [])} released SELL(s) (after idempotency)")
         except Exception as e:
             print(f"[APP] ❌ Released SELL placement failed: {e}")
 
@@ -176,7 +177,42 @@ if st.sidebar.button("🚪 Sign Out / Clear Session", use_container_width=True):
         st.session_state[k] = DEFAULT_STATE[k]
     if pnl_monitor.is_running():
         pnl_monitor.stop()
+    # Also stop process-wide background workers to avoid duplicate WS/GTT threads
+    stop_workers()
     st.sidebar.success("Session cleared")
+
+# Maintenance
+st.sidebar.markdown("---")
+st.sidebar.markdown("## Maintenance")
+st.sidebar.caption(
+    "Use these only if something got out of sync after a refresh/restart. "
+    "They do not cancel or modify any orders at Zerodha; they only reset this app’s local linking memory."
+)
+
+confirm_reset = st.sidebar.checkbox(
+    "I understand: this will forget any pending linked SELLs",
+    value=False,
+)
+if st.sidebar.button(
+    "Reset Linked-Order Memory",
+    disabled=not confirm_reset,
+    use_container_width=True,
+    help=(
+        "Clears the app’s saved linkage between BUY fills and queued SELLs. "
+        "Use when you want to start fresh or if SELLs are not releasing due to stale local state. "
+        "Do NOT use while you still expect this app to auto-place pending linked SELLs for an already-placed BUY."
+    ),
+):
+    try:
+        msg = ensure_linker().reset_state()
+        st.sidebar.warning(
+            "Reset complete.\n\n"
+            "What this does: clears local queued linked SELLs + BUY→group mappings.\n"
+            "What this does NOT do: cancel any existing Kite orders/GTTs." 
+        )
+        st.sidebar.info(msg)
+    except Exception as e:
+        st.sidebar.error(f"Reset failed: {e}")
 
 # (Sidebar Debug removed per user request)
 
@@ -196,8 +232,15 @@ _install_release_callback(linker, client)
 
 # Ensure runtime services are initialized in LIVE mode
 if live_mode:
-    ensure_gtt_watcher(client, linker)
-    ensure_ws(client, linker)
+    workers = ensure_workers(
+        kite=client,
+        api_key=st.session_state.get("api_key"),
+        access_token=st.session_state.get("access_token"),
+        linker=linker,
+    )
+    # Keep references for debug panels
+    st.session_state["gtt"] = workers.get("gtt")
+    st.session_state["ws"] = workers.get("ws")
 
 st.markdown("## Order Execution")
 
@@ -392,9 +435,7 @@ with st.expander("🔧 Debug Panels", expanded=False):
             linker.load_state()
             st.info("Load triggered! Check linker state above.")
     with col3:
-        if st.button("🧹 Clear Linker State"):
-            msg = linker.reset_state()
-            st.warning(msg)
+        st.caption("State reset moved to sidebar → Maintenance")
     
     # Show file system info
     import os
@@ -405,7 +446,7 @@ with st.expander("🔧 Debug Panels", expanded=False):
     st.text(f"Files in CWD ({len(files_in_cwd)}): {files_in_cwd[:15]}")
     
     # Check for state file
-    state_file = Path("/mount/src/trading_bot/linker_state.json")
+    state_file = Path(getattr(linker, "STATE_FILE", "linker_state.json"))
     if state_file.exists():
         st.success(f"✅ State file found: {state_file}")
         with open(state_file) as f:

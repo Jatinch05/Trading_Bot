@@ -42,6 +42,11 @@ class GTTWatcher:
 
     def stop(self):
         self.running = False
+        try:
+            if self._poller:
+                self._poller.stop()
+        except Exception:
+            pass
 
     def _loop(self):
         while self.running:

@@ -1,7 +1,7 @@
 # services/ws/ws_manager.py
 from kiteconnect import KiteTicker
 import threading
-import time
+import datetime as _dt
 
 class WSManager:
     def __init__(self, api_key, access_token, linker):
@@ -11,27 +11,43 @@ class WSManager:
         self._events = []  # recent WS events for debugging
         self._connected = False
         self._connection_time = None
+        self._stopped = False
 
-        self.kws.on_ticks = self.on_ticks
-        self.kws.on_connect = self.on_connect
-        self.kws.on_close = self.on_close
-        self.kws.on_error = self.on_error
-        self.kws.on_reconnect = self.on_reconnect
-        self.kws.on_noreconnect = self.on_noreconnect
-        self.kws.on_order_update = self.on_order_update
+        # KiteTicker stubs are sometimes typed as read-only; use setattr for compatibility.
+        setattr(self.kws, "on_ticks", self.on_ticks)
+        setattr(self.kws, "on_connect", self.on_connect)
+        setattr(self.kws, "on_close", self.on_close)
+        setattr(self.kws, "on_error", self.on_error)
+        setattr(self.kws, "on_reconnect", self.on_reconnect)
+        setattr(self.kws, "on_noreconnect", self.on_noreconnect)
+        setattr(self.kws, "on_order_update", self.on_order_update)
 
     def start(self):
         self._log("WS start() called; connecting...")
-        self._connection_time = time.time()
+        self._connection_time = _dt.datetime.now(_dt.timezone.utc).timestamp()
         self.kws.connect(threaded=True)
         
         # Monitor connection timeout (20 seconds)
         def check_timeout():
-            time.sleep(20)
+            threading.Event().wait(20)
             if not self._connected:
                 self._log("[WS] ❌ Connection timeout after 20s - check token/network")
         
         threading.Thread(target=check_timeout, daemon=True).start()
+
+    def stop(self):
+        """Best-effort stop.
+
+        Streamlit refresh can leave old daemon threads alive; call this when
+        restarting workers or signing out.
+        """
+        self._stopped = True
+        try:
+            self.kws.close()
+        except Exception:
+            pass
+        self._connected = False
+        self._log("[WS] stop() called")
 
     # -------------------------------------------------
     # Event helpers
@@ -50,7 +66,8 @@ class WSManager:
 
     def on_connect(self, ws, resp):
         self._connected = True
-        elapsed = time.time() - self._connection_time if self._connection_time else 0
+        now_ts = _dt.datetime.now(_dt.timezone.utc).timestamp()
+        elapsed = now_ts - self._connection_time if self._connection_time else 0
         self._log(f"✅ [WS] Connected in {elapsed:.1f}s; resp={resp}")
         try:
             ws.subscribe([])  # No instrument ticks needed; order updates are pushed globally
@@ -59,6 +76,7 @@ class WSManager:
 
     def on_close(self, ws, code, reason):
         self._log(f"[WS] Closed code={code} reason={reason}")
+        self._connected = False
 
     def on_error(self, ws, code, reason):
         self._log(f"❌ [WS] Error code={code} reason={reason}")
@@ -90,4 +108,6 @@ class WSManager:
         return {
             "events": list(self._events),
             "credited_orders": list(self._credited_orders),
+            "connected": self._connected,
+            "stopped": self._stopped,
         }
