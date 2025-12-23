@@ -4,93 +4,56 @@ from typing import List
 from models import OrderIntent
 
 
-def _resolve_last_price(kite, intent: OrderIntent, fallback: float) -> float:
-    """Derive last_price for place_gtt.
+def _get_ltp(kite, intent: OrderIntent) -> float | None:
+    key = f"{intent.exchange}:{intent.symbol}"
+    try:
+        data = kite.ltp([key])
+        if isinstance(data, dict) and key in data:
+            lp = data[key].get("last_price")
+            if lp is not None:
+                return float(lp)
+    except Exception:
+        return None
+    return None
 
-    Kite validates `last_price` relative to trigger(s). Using a value on the wrong
-    side can cause errors like:
-      "Trigger cannot be created with the first trigger price more than the last price."
 
-    Strategy:
-    1) Prefer live LTP from `kite.quote`.
-    2) If missing/too close/wrong-side, nudge to the *correct* side:
-       - BUY triggers typically must be ABOVE last_price  -> keep last_price < trigger
-       - SELL triggers typically must be BELOW last_price -> keep last_price > trigger
+def _resolve_last_price_single(kite, intent: OrderIntent, trigger: float) -> float:
+    """Use raw live LTP when available; otherwise use trigger.
+
+    Per user request, do not adjust/nudge last_price before calling the broker.
     """
 
-    last_price = fallback
-    quote_key = f"{intent.exchange}:{intent.symbol}"
+    ltp = _get_ltp(kite, intent)
+    if ltp is not None:
+        return float(ltp)
+    return float(trigger)
+
+
+def _get_ltp(kite, intent: OrderIntent) -> float | None:
+    key = f"{intent.exchange}:{intent.symbol}"
     try:
-        quote = kite.quote(quote_key)
-        instrument = quote.get(quote_key, {}) if isinstance(quote, dict) else {}
-        candidate = instrument.get("last_price") or instrument.get("last_traded_price")
-        if candidate is not None and str(candidate).strip() != "":
-            last_price = float(candidate)
+        data = kite.ltp([key])
+        if isinstance(data, dict) and key in data:
+            lp = data[key].get("last_price")
+            if lp is not None:
+                return float(lp)
     except Exception:
-        last_price = fallback
-
-    if last_price is None:
-        last_price = fallback
-
-    trigger = float(fallback)
-    current = float(last_price)
-
-    # Kite requires >0.25% difference; use 0.3% to be safe, minimum 0.5
-    threshold_pct = 0.003  # 0.3%
-    min_epsilon = 0.5
-    epsilon = max(abs(trigger) * threshold_pct, min_epsilon)
-
-    # If too close to trigger, push away on the correct side
-    if abs(current - trigger) < abs(trigger) * threshold_pct:
-        if intent.txn_type == "BUY":
-            current = trigger - epsilon
-        else:
-            current = trigger + epsilon
-
-    # Ensure correct-side relationship even if quote returned wrong-side
-    if intent.txn_type == "BUY" and current >= trigger:
-        current = trigger - epsilon
-    if intent.txn_type == "SELL" and current <= trigger:
-        current = trigger + epsilon
-
-    return float(current)
+        return None
+    return None
 
 
 def _resolve_last_price_for_oco(kite, intent: OrderIntent, trig_a: float, trig_b: float) -> float:
-    """Compute a valid last_price for OCO.
+    """Use raw live LTP when available; otherwise midpoint.
 
-    For OCO, Kite expects last_price to lie between the two trigger values.
-    We use live LTP if available; otherwise we use the midpoint, and then clamp
-    inside (low, high) with a small epsilon.
+    Per user request, no clamping/nudging before sending to broker.
     """
 
+    ltp = _get_ltp(kite, intent)
+    if ltp is not None:
+        return float(ltp)
     low = float(min(trig_a, trig_b))
     high = float(max(trig_a, trig_b))
-    mid = (low + high) / 2.0
-
-    last_price = mid
-    quote_key = f"{intent.exchange}:{intent.symbol}"
-    try:
-        quote = kite.quote(quote_key)
-        instrument = quote.get(quote_key, {}) if isinstance(quote, dict) else {}
-        candidate = instrument.get("last_price") or instrument.get("last_traded_price")
-        if candidate is not None:
-            last_price = float(candidate)
-    except Exception:
-        last_price = mid
-
-    # Clamp strictly between triggers
-    min_epsilon = 0.5
-    if last_price <= low:
-        last_price = low + min_epsilon
-    if last_price >= high:
-        last_price = high - min_epsilon
-
-    # If triggers are extremely tight and epsilon collapses range, fall back to midpoint
-    if not (low < last_price < high):
-        last_price = mid
-
-    return float(last_price)
+    return (low + high) / 2.0
 
 
 def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = True):
@@ -112,8 +75,11 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
                 if intent.gtt_type == "SINGLE":
                     trigger = float(intent.gtt_trigger)
                     price = float(intent.gtt_limit)
-                    print(f"[PLACEMENT] GTT SINGLE BUY: {intent.symbol} qty={intent.qty} trigger={trigger} limit={price}")
-                    last_price = _resolve_last_price(kite, intent, trigger)
+                    last_price = _resolve_last_price_single(kite, intent, trigger)
+                    print(
+                        f"[PLACEMENT] GTT SINGLE BUY: {intent.symbol} qty={intent.qty} "
+                        f"trigger={trigger} limit={price} last_price={last_price}"
+                    )
                     response = kite.place_gtt(
                         trigger_type=kite.GTT_TYPE_SINGLE,
                         tradingsymbol=intent.symbol,
@@ -269,7 +235,11 @@ def place_released_sells(kite, sells: List[OrderIntent], live: bool = True):
             if intent.gtt_type == "SINGLE":
                 trigger = float(intent.gtt_trigger)
                 price = float(intent.gtt_limit)
-                last_price = _resolve_last_price(kite, intent, trigger)
+                last_price = _resolve_last_price_single(kite, intent, trigger)
+                print(
+                    f"[PLACEMENT] GTT SINGLE SELL: {intent.symbol} qty={intent.qty} "
+                    f"trigger={trigger} limit={price} last_price={last_price}"
+                )
                 response = kite.place_gtt(
                     trigger_type=kite.GTT_TYPE_SINGLE,
                     tradingsymbol=intent.symbol,

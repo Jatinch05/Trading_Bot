@@ -125,6 +125,52 @@ def _install_release_callback(linker: OrderLinker, client):
 
 
 # =========================================================
+# ERROR HANDLING HELPERS (UI)
+# =========================================================
+def _friendly_kite_error(e: Exception) -> tuple[str, str]:
+    """Return (title, details) suitable for end users.
+
+    We avoid exposing raw stack traces and instead show the actionable reason.
+    """
+    msg = str(e) or e.__class__.__name__
+    mlow = msg.lower()
+
+    # Common patterns
+    if "incorrect `api_key` or `access_token`" in mlow:
+        return (
+            "Session expired or invalid",
+            "Your Kite session looks invalid. Please Exchange Token again from the sidebar.",
+        )
+    if "trigger cannot be created with the first trigger price more than the last price" in mlow:
+        return (
+            "Invalid GTT triggers",
+            "First trigger must be below current last price (for SELL) or above (for BUY). Adjust trigger values or wait for price to move.",
+        )
+    if "invalid" in mlow and "trigger" in mlow:
+        return (
+            "Invalid GTT parameters",
+            "Please review trigger/limit values and tick sizes. Ensure order_type, product, and qty are valid for the instrument.",
+        )
+    if "trigger already met" in mlow:
+        return (
+            "Trigger already met",
+            "The trigger you provided has already been crossed. For stop-style entries (including GTT single), set the trigger on the un-crossed side of the current price; for passive entries use LIMIT/MARKET instead.",
+        )
+    if "price" in mlow and "tick" in mlow:
+        return (
+            "Invalid price step",
+            "Price doesn’t match the instrument’s tick size. Adjust to a valid tick increment.",
+        )
+    if "quantity" in mlow and ("multiple" in mlow or "lot" in mlow):
+        return (
+            "Invalid quantity",
+            "Quantity must be a valid lot size multiple for this instrument.",
+        )
+    # Fallback
+    return ("Zerodha rejected the request", msg)
+
+
+# =========================================================
 # SECTION 1: AUTHENTICATION (Sidebar)
 # =========================================================
 st.sidebar.markdown("## Authentication")
@@ -338,26 +384,68 @@ if clear_sel_clicked:
     st.session_state["selected_rows"] = set()
 
 def _execute_intents(run_intents: list[OrderIntent]):
+    results_rows = []
     if not live_mode:
-        results = [
-            {"order_id": None, "symbol": i.symbol, "txn_type": i.txn_type, "qty": i.qty, "status": "DRY-RUN"}
-            for i in run_intents
-        ]
+        for i in run_intents:
+            results_rows.append({
+                "row": getattr(i, "source_row", None),
+                "symbol": i.symbol,
+                "txn_type": i.txn_type,
+                "qty": i.qty,
+                "order_type": getattr(i, "order_type", None),
+                "trigger_price": getattr(i, "trigger_price", None),
+                "price": getattr(i, "price", None),
+                "status": "DRY-RUN",
+            })
     else:
-        results = execute_bundle(kite=client, intents=run_intents, linker=linker, live=True)
+        for i in run_intents:
+            try:
+                res = execute_bundle(kite=client, intents=[i], linker=linker, live=True) or []
+                for r in res:
+                    r["row"] = getattr(i, "source_row", None)
+                    r["order_type"] = getattr(i, "order_type", None)
+                    r["trigger_price"] = getattr(i, "trigger_price", None)
+                    r["price"] = getattr(i, "price", None)
+                    r["api"] = "place_gtt" if getattr(i, "gtt", "NO") == "YES" else "place_order"
+                    r["gtt"] = getattr(i, "gtt", None)
+                    r["gtt_type"] = getattr(i, "gtt_type", None)
+                    results_rows.append(r)
+            except Exception as e:
+                title, details = _friendly_kite_error(e)
+                results_rows.append({
+                    "row": getattr(i, "source_row", None),
+                    "symbol": i.symbol,
+                    "txn_type": i.txn_type,
+                    "qty": i.qty,
+                    "order_type": getattr(i, "order_type", None),
+                    "trigger_price": getattr(i, "trigger_price", None),
+                    "price": getattr(i, "price", None),
+                    "status": "ERROR",
+                    "message": f"{title}: {details}",
+                    "api": "place_gtt" if getattr(i, "gtt", "NO") == "YES" else "place_order",
+                    "gtt": getattr(i, "gtt", None),
+                    "gtt_type": getattr(i, "gtt_type", None),
+                    "raw_error": str(e),
+                })
     st.subheader("Execution Results")
-    st.dataframe(pd.DataFrame(results), width="stretch")
+    st.dataframe(pd.DataFrame(results_rows), width="stretch")
 
 if exec_all_clicked and st.session_state.get("validated_rows"):
-    intents = st.session_state["validated_rows"]
+    base_intents = st.session_state["validated_rows"]
+    intents = []
+    for idx, intent in enumerate(base_intents):
+        data = intent.__dict__.copy()
+        data["source_row"] = idx
+        intents.append(OrderIntent(**data))
     _execute_intents(intents)
 
 if exec_sel_clicked and st.session_state.get("selected_rows"):
-    rows = [
-        st.session_state["validated_rows"][i].__dict__
-        for i in st.session_state["selected_rows"]
-    ]
-    intents = [OrderIntent(**r) for r in rows]
+    rows_data = []
+    for i in st.session_state["selected_rows"]:
+        d = st.session_state["validated_rows"][i].__dict__.copy()
+        d["source_row"] = int(i)
+        rows_data.append(d)
+    intents = [OrderIntent(**r) for r in rows_data]
     _execute_intents(intents)
 
 
@@ -383,7 +471,8 @@ if live_mode and st.session_state["kite"]:
         else:
             st.info("No orders")
     except Exception as e:
-        st.error(f"Failed to fetch orders: {e}")
+        title, details = _friendly_kite_error(e)
+        st.error(f"{title}: {details}")
     
     # P&L
     st.markdown("### Positions & P&L")

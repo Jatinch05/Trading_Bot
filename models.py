@@ -33,6 +33,9 @@ class OrderIntent(BaseModel):
     gtt_trigger_2: Optional[float] = None
     gtt_limit_2: Optional[float] = None
 
+    # Row tracking (for UI error reporting)
+    source_row: Optional[int] = None
+
     # ---------------------------
     # VALIDATORS
     # ---------------------------
