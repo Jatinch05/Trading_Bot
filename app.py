@@ -2,6 +2,9 @@
 # Architecture: Auth → Upload → Validate → Execute → Monitor → Debug
 
 import streamlit as st
+import os
+import sys
+import json
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
 
@@ -18,12 +21,23 @@ from services.results import dataframe_to_excel_download
 from services.ws.linker import OrderLinker
 from services.ws.ws_manager import WSManager
 from services.ws.gtt_watcher import GTTWatcher
+from services.ws.runtime import ensure_workers, stop_workers
 from services import pnl_monitor
 
 
 # =========================================================
 # PAGE SETUP
 # =========================================================
+"""
+Ensure imports work both locally and in managed environments where the
+working directory may differ. Add the project root to sys.path so that
+`services.*` and `models` resolve reliably.
+"""
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = APP_DIR  # repo root is same directory in this workspace
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 
@@ -49,7 +63,15 @@ for k, v in DEFAULT_STATE.items():
 # =========================================================
 # AUTO-REFRESH (page-wide)
 # =========================================================
-st_autorefresh(interval=2000, key="page_refresh")
+# Allow pausing auto-refresh to avoid flicker during auth/token exchange
+pause_refresh = st.sidebar.checkbox(
+    "Pause auto-refresh",
+    value=True,
+    help="Disable periodic reruns to avoid flicker while authenticating"
+)
+
+if not pause_refresh:
+    st_autorefresh(interval=2000, key="page_refresh")
 
 
 # =========================================================
@@ -59,7 +81,8 @@ def ensure_linker() -> OrderLinker:
     """Ensure linker exists and has release callback."""
     if st.session_state["linker"] is None:
         st.session_state["linker"] = OrderLinker()
-        st.session_state["linker"].set_release_callback(_on_sells_released)
+        # Restore state from previous session
+        st.session_state["linker"].load_state()
     return st.session_state["linker"]
 
 
@@ -86,20 +109,65 @@ def ensure_ws(kite, linker):
     return st.session_state["ws"]
 
 
-def _on_sells_released(sells: list):
-    """Callback when linker releases SELLs after BUY fills."""
-    print(f"[APP] Release callback triggered: {len(sells)} SELLs to place")
-    client = st.session_state.get("kite")
-    if not client:
-        print("[APP] ❌ No Kite client, cannot place SELLs")
-        return
-    
+def _install_release_callback(linker: OrderLinker, client):
+    """Install a thread-safe callback (no Streamlit/session access in threads)."""
     from services.orders.pipeline import execute_released_sells
-    try:
-        execute_released_sells(kite=client, sells=sells, live=True)
-        print(f"[APP] ✅ Released {len(sells)} SELLs via callback")
-    except Exception as e:
-        print(f"[APP] ❌ Release failed: {e}")
+
+    def _place_released(sells: list):
+        try:
+            print(f"[APP] Placing {len(sells)} released SELL(s) (requested)")
+            results = execute_released_sells(kite=client, sells=sells, live=True)
+            print(f"[APP] ✅ Placed {len(results or [])} released SELL(s) (after idempotency)")
+        except Exception as e:
+            print(f"[APP] ❌ Released SELL placement failed: {e}")
+
+    linker.set_release_callback(_place_released)
+
+
+# =========================================================
+# ERROR HANDLING HELPERS (UI)
+# =========================================================
+def _friendly_kite_error(e: Exception) -> tuple[str, str]:
+    """Return (title, details) suitable for end users.
+
+    We avoid exposing raw stack traces and instead show the actionable reason.
+    """
+    msg = str(e) or e.__class__.__name__
+    mlow = msg.lower()
+
+    # Common patterns
+    if "incorrect `api_key` or `access_token`" in mlow:
+        return (
+            "Session expired or invalid",
+            "Your Kite session looks invalid. Please Exchange Token again from the sidebar.",
+        )
+    if "trigger cannot be created with the first trigger price more than the last price" in mlow:
+        return (
+            "Invalid GTT triggers",
+            "First trigger must be below current last price (for SELL) or above (for BUY). Adjust trigger values or wait for price to move.",
+        )
+    if "invalid" in mlow and "trigger" in mlow:
+        return (
+            "Invalid GTT parameters",
+            "Please review trigger/limit values and tick sizes. Ensure order_type, product, and qty are valid for the instrument.",
+        )
+    if "trigger already met" in mlow:
+        return (
+            "Trigger already met",
+            "The trigger you provided has already been crossed. For stop-style entries (including GTT single), set the trigger on the un-crossed side of the current price; for passive entries use LIMIT/MARKET instead.",
+        )
+    if "price" in mlow and "tick" in mlow:
+        return (
+            "Invalid price step",
+            "Price doesn’t match the instrument’s tick size. Adjust to a valid tick increment.",
+        )
+    if "quantity" in mlow and ("multiple" in mlow or "lot" in mlow):
+        return (
+            "Invalid quantity",
+            "Quantity must be a valid lot size multiple for this instrument.",
+        )
+    # Fallback
+    return ("Zerodha rejected the request", msg)
 
 
 # =========================================================
@@ -155,7 +223,44 @@ if st.sidebar.button("🚪 Sign Out / Clear Session", use_container_width=True):
         st.session_state[k] = DEFAULT_STATE[k]
     if pnl_monitor.is_running():
         pnl_monitor.stop()
+    # Also stop process-wide background workers to avoid duplicate WS/GTT threads
+    stop_workers()
     st.sidebar.success("Session cleared")
+
+# Maintenance
+st.sidebar.markdown("---")
+st.sidebar.markdown("## Maintenance")
+st.sidebar.caption(
+    "Use these only if something got out of sync after a refresh/restart. "
+    "They do not cancel or modify any orders at Zerodha; they only reset this app’s local linking memory."
+)
+
+confirm_reset = st.sidebar.checkbox(
+    "I understand: this will forget any pending linked SELLs",
+    value=False,
+)
+if st.sidebar.button(
+    "Reset Linked-Order Memory",
+    disabled=not confirm_reset,
+    use_container_width=True,
+    help=(
+        "Clears the app’s saved linkage between BUY fills and queued SELLs. "
+        "Use when you want to start fresh or if SELLs are not releasing due to stale local state. "
+        "Do NOT use while you still expect this app to auto-place pending linked SELLs for an already-placed BUY."
+    ),
+):
+    try:
+        msg = ensure_linker().reset_state()
+        st.sidebar.warning(
+            "Reset complete.\n\n"
+            "What this does: clears local queued linked SELLs + BUY→group mappings.\n"
+            "What this does NOT do: cancel any existing Kite orders/GTTs." 
+        )
+        st.sidebar.info(msg)
+    except Exception as e:
+        st.sidebar.error(f"Reset failed: {e}")
+
+# (Sidebar Debug removed per user request)
 
 
 # =========================================================
@@ -168,10 +273,20 @@ if st.session_state["kite"] is None:
 client = st.session_state["kite"]
 linker = ensure_linker()
 
+# Install (or refresh) release callback with current client
+_install_release_callback(linker, client)
+
 # Ensure runtime services are initialized in LIVE mode
 if live_mode:
-    ensure_gtt_watcher(client, linker)
-    ensure_ws(client, linker)
+    workers = ensure_workers(
+        kite=client,
+        api_key=st.session_state.get("api_key"),
+        access_token=st.session_state.get("access_token"),
+        linker=linker,
+    )
+    # Keep references for debug panels
+    st.session_state["gtt"] = workers.get("gtt")
+    st.session_state["ws"] = workers.get("ws")
 
 st.markdown("## Order Execution")
 
@@ -190,16 +305,33 @@ raw_df = None
 if file:
     raw_df = pd.read_excel(file)
     st.dataframe(raw_df.head(20), width="stretch")
+    # Reset selection state when a new file is uploaded
+    if st.session_state.get("_last_file_name") != getattr(file, "name", None):
+        st.session_state["_last_file_name"] = getattr(file, "name", None)
+        st.session_state["validated_rows"] = []
+        st.session_state["vdf_disp"] = None
+        st.session_state["selected_rows"] = set()
     
     # Validate
     if st.button("✓ Validate Rows"):
         try:
-            intents, errors = normalize_and_validate(raw_df, instruments=Instruments())
+            # Validate with minimal instruments loader (returns empty set if file missing)
+            intents, vdf, errors = normalize_and_validate(raw_df, instruments=Instruments.load())
             st.session_state["validated_rows"] = intents
             
             if not errors:
                 st.success(f"✅ All {len(intents)} rows valid")
-                st.session_state["vdf_disp"] = raw_df.copy()
+                # Only set display df if not already edited, to preserve selections across reruns
+                if st.session_state.get("vdf_disp") is None:
+                    st.session_state["vdf_disp"] = vdf.copy()
+                else:
+                    # Update existing df values but preserve the select column
+                    prev = st.session_state["vdf_disp"].copy()
+                    has_select = "select" in prev.columns
+                    merged = vdf.copy()
+                    if has_select:
+                        merged.insert(0, "select", prev.get("select", False))
+                    st.session_state["vdf_disp"] = merged
             else:
                 st.error(f"❌ {len(errors)} rows failed validation")
                 st.dataframe(
@@ -214,8 +346,11 @@ if st.session_state.get("vdf_disp") is not None:
     st.markdown("### Select Rows to Execute")
     
     disp = st.session_state["vdf_disp"].copy()
-    disp.insert(0, "select", False)
+    # Add select column if it doesn't exist
+    if "select" not in disp.columns:
+        disp.insert(0, "select", False)
     
+    # Provide a stable key and disable autorefresh hint
     edited = st.data_editor(
         disp,
         hide_index=False,
@@ -225,34 +360,93 @@ if st.session_state.get("vdf_disp") is not None:
     )
     
     st.session_state["vdf_disp"] = edited.copy()
-    st.session_state["selected_rows"] = set(edited[edited["select"]].index)
+    # Ensure select column is boolean and handle NaN
+    select_mask = edited["select"].fillna(False).astype(bool)
+    st.session_state["selected_rows"] = set(edited[select_mask].index)
 
-# Execute
-if st.button("🚀 Execute", disabled=(len(st.session_state["selected_rows"]) == 0)):
-    rows = [
-        st.session_state["validated_rows"][i].__dict__
-        for i in st.session_state["selected_rows"]
-    ]
-    intents = [OrderIntent(**r) for r in rows]
-    
+col_exec_all, col_exec_sel, col_clear_sel = st.columns([1,1,1])
+
+# Execute All
+exec_all_clicked = col_exec_all.button("🚀 Execute All", disabled=(len(st.session_state.get("validated_rows", [])) == 0))
+
+# Execute Selected
+exec_sel_clicked = col_exec_sel.button("🚀 Execute Selected", disabled=(len(st.session_state.get("selected_rows", set())) == 0))
+
+# Clear Selection to prevent accidental rerun loss
+clear_sel_clicked = col_clear_sel.button("🧹 Clear Selection")
+
+if clear_sel_clicked:
+    if st.session_state.get("vdf_disp") is not None:
+        vdf_tmp = st.session_state["vdf_disp"].copy()
+        if "select" in vdf_tmp.columns:
+            vdf_tmp["select"] = False  # explicitly False (not NaN)
+        st.session_state["vdf_disp"] = vdf_tmp
+    st.session_state["selected_rows"] = set()
+
+def _execute_intents(run_intents: list[OrderIntent]):
+    results_rows = []
     if not live_mode:
-        # Dry-run
-        results = [
-            {
-                "order_id": None,
+        for i in run_intents:
+            results_rows.append({
+                "row": getattr(i, "source_row", None),
                 "symbol": i.symbol,
                 "txn_type": i.txn_type,
                 "qty": i.qty,
+                "order_type": getattr(i, "order_type", None),
+                "trigger_price": getattr(i, "trigger_price", None),
+                "price": getattr(i, "price", None),
                 "status": "DRY-RUN",
-            }
-            for i in intents
-        ]
+            })
     else:
-        # Live execution
-        results = execute_bundle(kite=client, intents=intents, linker=linker, live=True)
-    
+        for i in run_intents:
+            try:
+                res = execute_bundle(kite=client, intents=[i], linker=linker, live=True) or []
+                for r in res:
+                    r["row"] = getattr(i, "source_row", None)
+                    r["order_type"] = getattr(i, "order_type", None)
+                    r["trigger_price"] = getattr(i, "trigger_price", None)
+                    r["price"] = getattr(i, "price", None)
+                    r["api"] = "place_gtt" if getattr(i, "gtt", "NO") == "YES" else "place_order"
+                    r["gtt"] = getattr(i, "gtt", None)
+                    r["gtt_type"] = getattr(i, "gtt_type", None)
+                    results_rows.append(r)
+            except Exception as e:
+                title, details = _friendly_kite_error(e)
+                results_rows.append({
+                    "row": getattr(i, "source_row", None),
+                    "symbol": i.symbol,
+                    "txn_type": i.txn_type,
+                    "qty": i.qty,
+                    "order_type": getattr(i, "order_type", None),
+                    "trigger_price": getattr(i, "trigger_price", None),
+                    "price": getattr(i, "price", None),
+                    "status": "ERROR",
+                    "message": f"{title}: {details}",
+                    "api": "place_gtt" if getattr(i, "gtt", "NO") == "YES" else "place_order",
+                    "gtt": getattr(i, "gtt", None),
+                    "gtt_type": getattr(i, "gtt_type", None),
+                    "raw_error": str(e),
+                })
     st.subheader("Execution Results")
-    st.dataframe(pd.DataFrame(results), width="stretch")
+    st.dataframe(pd.DataFrame(results_rows), width="stretch")
+
+if exec_all_clicked and st.session_state.get("validated_rows"):
+    base_intents = st.session_state["validated_rows"]
+    intents = []
+    for idx, intent in enumerate(base_intents):
+        data = intent.__dict__.copy()
+        data["source_row"] = idx
+        intents.append(OrderIntent(**data))
+    _execute_intents(intents)
+
+if exec_sel_clicked and st.session_state.get("selected_rows"):
+    rows_data = []
+    for i in st.session_state["selected_rows"]:
+        d = st.session_state["validated_rows"][i].__dict__.copy()
+        d["source_row"] = int(i)
+        rows_data.append(d)
+    intents = [OrderIntent(**r) for r in rows_data]
+    _execute_intents(intents)
 
 
 # =========================================================
@@ -277,7 +471,8 @@ if live_mode and st.session_state["kite"]:
         else:
             st.info("No orders")
     except Exception as e:
-        st.error(f"Failed to fetch orders: {e}")
+        title, details = _friendly_kite_error(e)
+        st.error(f"{title}: {details}")
     
     # P&L
     st.markdown("### Positions & P&L")
@@ -311,6 +506,42 @@ if live_mode and st.session_state["kite"]:
 with st.expander("🔧 Debug Panels", expanded=False):
     st.markdown("### Linker State")
     st.json(linker.snapshot())
+    
+    # Debug: Test save/load
+    st.markdown("### State File Debug")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("🔍 Force Save State"):
+            result = linker.save_state()
+            if result is None:
+                st.info("Save completed (no message)")
+            elif "✅" in result:
+                st.success(result)
+            else:
+                st.error(result)
+    with col2:
+        if st.button("🔄 Force Load State"):
+            linker.load_state()
+            st.info("Load triggered! Check linker state above.")
+    with col3:
+        st.caption("State reset moved to sidebar → Maintenance")
+    
+    # Show file system info
+    import os
+    from pathlib import Path
+    st.markdown("#### File System Info")
+    st.text(f"CWD: {os.getcwd()}")
+    files_in_cwd = os.listdir('.')
+    st.text(f"Files in CWD ({len(files_in_cwd)}): {files_in_cwd[:15]}")
+    
+    # Check for state file
+    state_file = Path(getattr(linker, "STATE_FILE", "linker_state.json"))
+    if state_file.exists():
+        st.success(f"✅ State file found: {state_file}")
+        with open(state_file) as f:
+            st.json(json.load(f))
+    else:
+        st.warning(f"❌ State file not found: {state_file}")
     
     if st.session_state.get("gtt"):
         st.markdown("### GTT Watcher State")

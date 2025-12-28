@@ -2,6 +2,7 @@
 
 import pandas as pd
 from typing import Tuple, List
+from collections import defaultdict
 from models import OrderIntent
 
 REQUIRED_COLS = [
@@ -71,6 +72,7 @@ def _require(v, msg: str):
 
 def normalize_and_validate(df: pd.DataFrame, instruments) -> Tuple[List[OrderIntent], pd.DataFrame, List[Tuple[int, str]]]:
     errors, intents, validated_rows = [], [], []
+    intent_by_row: list[tuple[int, OrderIntent]] = []
 
     # Ensure columns exist
     for c in REQUIRED_COLS:
@@ -173,6 +175,9 @@ def normalize_and_validate(df: pd.DataFrame, instruments) -> Tuple[List[OrderInt
 
             else:
                 # Regular order semantic checks
+                # SELL orders must be linked to a BUY via tag=link:<group>
+                if txn_type == "SELL" and not tag:
+                    raise ValueError("SELL requires tag=link:<group> to be queued and released after BUY fills")
                 if order_type == "MARKET":
                     if trig_regular not in (None, "", 0, 0.0):
                         raise ValueError("MARKET order must not include trigger_price")
@@ -203,9 +208,42 @@ def normalize_and_validate(df: pd.DataFrame, instruments) -> Tuple[List[OrderInt
 
             intents.append(intent)
             validated_rows.append(intent.model_dump())
+            intent_by_row.append((idx, intent))
 
         except Exception as e:
             errors.append((idx, str(e)))
 
     vdf = pd.DataFrame(validated_rows)
+
+    # -------------------------------------------------
+    # Sanity check: planned SELL qty must not exceed planned BUY qty per key
+    # Key is (exchange, symbol, group) where tag is link:<group>.
+    # This catches common spreadsheet mistakes that look like "double selling".
+    # -------------------------------------------------
+    buy_qty = defaultdict(int)
+    sell_qty = defaultdict(int)
+    sell_rows_for_key: dict[tuple[str, str, str], list[int]] = defaultdict(list)
+
+    for row_idx, intent in intent_by_row:
+        if not intent.tag or not intent.tag.startswith("link:"):
+            continue
+        group = intent.tag.split(":", 1)[1]
+        key = (intent.exchange, intent.symbol, group)
+        if intent.txn_type == "BUY":
+            buy_qty[key] += int(intent.qty)
+        elif intent.txn_type == "SELL":
+            sell_qty[key] += int(intent.qty)
+            sell_rows_for_key[key].append(row_idx)
+
+    for key, sq in sell_qty.items():
+        bq = buy_qty.get(key, 0)
+        if sq > bq:
+            ex, sym, grp = key
+            msg = (
+                f"Planned SELL qty {sq} exceeds planned BUY qty {bq} for link:{grp} ({ex}:{sym}). "
+                "Either reduce SELL quantities or add corresponding BUY rows."
+            )
+            for row_idx in sell_rows_for_key.get(key, []):
+                errors.append((row_idx, msg))
+
     return intents, vdf, errors

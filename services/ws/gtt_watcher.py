@@ -42,6 +42,11 @@ class GTTWatcher:
 
     def stop(self):
         self.running = False
+        try:
+            if self._poller:
+                self._poller.stop()
+        except Exception:
+            pass
 
     def _loop(self):
         while self.running:
@@ -67,6 +72,7 @@ class GTTWatcher:
                         try:
                             orders = gtt.get("orders", [])
                             print(f"[GTT_WATCHER] GTT {gid} has {len(orders)} orders in response")
+                            extracted_any = False
                             for o in orders:
                                 print(f"[GTT_WATCHER] Order object: {o}")
                                 # Extract child order_id from nested Zerodha response
@@ -75,17 +81,27 @@ class GTTWatcher:
                                 child_oid = order_result.get("order_id")
                                 print(f"[GTT_WATCHER] Extracted child_oid={child_oid}")
                                 if child_oid:
+                                    extracted_any = True
                                     child_oid = str(child_oid)  # Ensure string
                                     # Map child order to same key as parent GTT
                                     self._linker.bind_gtt_child(gid, child_oid)
                                     print(f"[GTT_WATCHER] Bound child order: {child_oid} → parent GTT {gid}")
-                                    
                                     # Also track it in the poller (fallback for WS failures)
                                     if self._poller:
                                         self._poller.track_order(child_oid)
                                         print(f"[GTT_WATCHER] Started polling child order {child_oid} (WS backup)")
                                     else:
                                         print(f"[GTT_WATCHER] ⚠️  Poller not ready yet for {child_oid}")
+                            # Fallback: some SDKs put child order id directly at top-level
+                            if not extracted_any:
+                                direct_child = gtt.get("order_id")
+                                if direct_child:
+                                    direct_child = str(direct_child)
+                                    self._linker.bind_gtt_child(gid, direct_child)
+                                    print(f"[GTT_WATCHER] Fallback bound direct child {direct_child} for GTT {gid}")
+                                    if self._poller:
+                                        self._poller.track_order(direct_child)
+                                        print(f"[GTT_WATCHER] Started polling direct child {direct_child}")
                         except Exception as e:
                             import traceback
                             print(f"[GTT_WATCHER] Error binding child: {e}")
@@ -108,8 +124,14 @@ class GTTWatcher:
                 if gid not in self._linker.gtt_registry:
                     continue
                 
-                # If already resolved, skip
+                # If already resolved, try to bind null children on recovery scan
                 if gid in self.resolved:
+                    if self.resolved[gid] is None and gtt.get("order_id"):
+                        direct_child = str(gtt.get("order_id"))
+                        self._linker.bind_gtt_child(gid, direct_child)
+                        print(f"[GTT_WATCHER] Recovery: Bound null→child {direct_child} for GTT {gid}")
+                        if self._poller:
+                            self._poller.track_order(direct_child)
                     continue
                 
                 # Check if triggered
@@ -122,11 +144,13 @@ class GTTWatcher:
                     try:
                         orders = gtt.get("orders", [])
                         print(f"[GTT_WATCHER] GTT {gid} has {len(orders)} orders in response")
+                        recovered_any = False
                         for o in orders:
                             result = o.get("result", {}) or {}
                             order_result = result.get("order_result", {}) or {}
                             child_oid = order_result.get("order_id")
                             if child_oid:
+                                recovered_any = True
                                 child_oid = str(child_oid)
                                 self._linker.bind_gtt_child(gid, child_oid)
                                 print(f"[GTT_WATCHER] Recovered child order: {child_oid} → GTT {gid}")
@@ -134,6 +158,15 @@ class GTTWatcher:
                                 if self._poller:
                                     self._poller.track_order(child_oid)
                                     print(f"[GTT_WATCHER] Started polling recovered child {child_oid}")
+                        if not recovered_any:
+                            direct_child = gtt.get("order_id")
+                            if direct_child:
+                                direct_child = str(direct_child)
+                                self._linker.bind_gtt_child(gid, direct_child)
+                                print(f"[GTT_WATCHER] Fallback recovered direct child {direct_child} for GTT {gid}")
+                                if self._poller:
+                                    self._poller.track_order(direct_child)
+                                    print(f"[GTT_WATCHER] Started polling recovered direct child {direct_child}")
                     except Exception as e:
                         print(f"[GTT_WATCHER] Error recovering child orders: {e}")
                         
