@@ -287,6 +287,7 @@ if live_mode:
     # Keep references for debug panels
     st.session_state["gtt"] = workers.get("gtt")
     st.session_state["ws"] = workers.get("ws")
+    st.session_state["buy_monitor"] = workers.get("buy_monitor")
 
 st.markdown("## Order Execution")
 
@@ -295,9 +296,10 @@ with st.expander("📋 Expected columns", expanded=False):
     st.code(
         """symbol, exchange, txn_type, qty, order_type, price, trigger_price,
 product, validity, variety, disclosed_qty, tag,
-gtt, gtt_type, gtt_trigger, gtt_limit, gtt_trigger_1, gtt_limit_1, gtt_trigger_2, gtt_limit_2"""
+gtt, gtt_type, gtt_trigger, gtt_limit, gtt_trigger_1, gtt_limit_1, gtt_trigger_2, gtt_limit_2, tolerance"""
     )
     st.caption("Use tag=link:<group> to link BUY/SELL automation. Example: tag=link:1")
+    st.caption("Set tolerance (e.g., 2.0) to queue BUY orders and place them when price hits trigger_price ± tolerance")
 
 file = st.file_uploader("Upload Excel", type=["xlsx"])
 raw_df = None
@@ -546,6 +548,28 @@ with st.expander("🔧 Debug Panels", expanded=False):
     if st.session_state.get("gtt"):
         st.markdown("### GTT Watcher State")
         st.json(st.session_state["gtt"].snapshot())
+    
+    if st.session_state.get("buy_monitor"):
+        st.markdown("### BUY Monitor State")
+        try:
+            st.json(st.session_state["buy_monitor"].snapshot())
+            # Show queued BUYs detail
+            with linker._lock:
+                if linker.buy_queue:
+                    st.markdown("#### Queued BUYs")
+                    buy_queue_data = []
+                    for entry in linker.buy_queue:
+                        intent = entry["intent"]
+                        buy_queue_data.append({
+                            "symbol": intent.symbol,
+                            "qty": intent.qty,
+                            "trigger": entry["trigger"],
+                            "tolerance": entry["tolerance"],
+                            "queued_at": entry.get("queued_at"),
+                        })
+                    st.dataframe(pd.DataFrame(buy_queue_data), width="stretch")
+        except Exception as e:
+            st.error(f"BUY monitor snapshot error: {e}")
     
     if st.session_state.get("ws"):
         st.markdown("### WebSocket State")

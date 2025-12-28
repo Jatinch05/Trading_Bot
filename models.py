@@ -33,6 +33,10 @@ class OrderIntent(BaseModel):
     gtt_trigger_2: Optional[float] = None
     gtt_limit_2: Optional[float] = None
 
+    # BUY queue trigger: if set, queue BUY instead of placing immediately
+    # trigger_price is reused as the queue trigger
+    tolerance: Optional[float] = None  # ±tolerance around trigger_price to place
+    
     # Row tracking (for UI error reporting)
     source_row: Optional[int] = None
 

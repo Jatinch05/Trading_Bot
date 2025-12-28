@@ -58,7 +58,7 @@ def _resolve_last_price_for_oco(kite, intent: OrderIntent, trig_a: float, trig_b
 
 def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = True):
     """
-    Places BUY orders immediately.
+    Places BUY orders immediately or queues them if tolerance is set.
     SELL orders:
       - If GTT -> placed ONLY via place_gtt
       - If non-GTT -> queued via linker or placed directly
@@ -67,9 +67,30 @@ def place_orders(kite, intents: List[OrderIntent], linker=None, live: bool = Tru
     results = []
 
     for intent in intents:
-        # -----------------------------
+        # Check if this BUY should be queued (tolerance is set)
+        if intent.txn_type == "BUY":
+            tolerance = getattr(intent, "tolerance", None)
+            if tolerance is not None and linker is not None:
+                # Queue this BUY to be placed when price hits trigger ± tolerance
+                trigger = intent.trigger_price if intent.trigger_price is not None else intent.price
+                if trigger is None:
+                    raise ValueError(f"BUY queue requires trigger_price or price for {intent.symbol}")
+                linker.queue_buy(intent, trigger, tolerance)
+                results.append({
+                    "order_id": None,
+                    "symbol": intent.symbol,
+                    "txn_type": "BUY",
+                    "qty": intent.qty,
+                    "status": "queued",
+                    "trigger": trigger,
+                    "tolerance": tolerance,
+                })
+                continue
+
+        # Regular placement logic (immediate BUY or GTT or SELL)
+        # ----- 
         # BUY ORDERS (place immediately, normal OR GTT)
-        # -----------------------------
+        # -----
         if intent.txn_type == "BUY":
             if intent.gtt == "YES":
                 if intent.gtt_type == "SINGLE":

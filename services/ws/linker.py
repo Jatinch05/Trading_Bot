@@ -13,6 +13,7 @@ class OrderLinker:
     def __init__(self):
         self.buy_credits = defaultdict(int)     # key -> filled qty
         self.sell_queues = defaultdict(deque)   # key -> deque[OrderIntent]
+        self.buy_queue = deque()                # deque[{intent, trigger, tolerance, queued_at}] for BUY orders waiting on price
         self.buy_registry = {}                  # order_id -> key
         self.gtt_registry = {}                  # gtt_id -> key (for pending GTT BUYs)
         self._release_cb = None
@@ -302,6 +303,76 @@ class OrderLinker:
             print(f"[LINKER] Calling release callback with {len(released)} SELLs (from queue_sell)")
             self._release_cb(released)
 
+    def queue_buy(self, intent, trigger: float, tolerance: float):
+        """Queue a BUY order to be placed when LTP hits trigger ± tolerance."""
+        import datetime as _dt
+        
+        with self._lock:
+            entry = {
+                "intent": intent,
+                "trigger": float(trigger),
+                "tolerance": float(tolerance),
+                "queued_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            }
+            self.buy_queue.append(entry)
+            print(
+                f"[LINKER] Queued BUY: {intent.symbol} qty={intent.qty} "
+                f"trigger={trigger} ±{tolerance}"
+            )
+        self.save_state()
+
+    def check_buy_triggers(self, prices_dict: dict) -> list:
+        """Check if any queued BUYs should be placed based on current prices.
+        
+        Args:
+            prices_dict: {symbol: ltp_float} or similar structure
+        
+        Returns:
+            list of OrderIntent objects ready to place
+        """
+        ready_to_place = []
+        
+        with self._lock:
+            remaining_queue = deque()
+            
+            for entry in self.buy_queue:
+                intent = entry["intent"]
+                trigger = entry["trigger"]
+                tolerance = entry["tolerance"]
+                symbol = intent.symbol
+                
+                # Get LTP for this symbol
+                ltp = None
+                if isinstance(prices_dict, dict):
+                    ltp = prices_dict.get(symbol)
+                
+                if ltp is None:
+                    # No price data yet; keep in queue
+                    remaining_queue.append(entry)
+                    continue
+                
+                # Check if LTP is within trigger ± tolerance
+                lower_bound = trigger - tolerance
+                upper_bound = trigger + tolerance
+                
+                if lower_bound <= ltp <= upper_bound:
+                    # Price hit! Remove from queue and add to ready list
+                    ready_to_place.append(intent)
+                    print(
+                        f"[LINKER] BUY trigger hit: {symbol} qty={intent.qty} "
+                        f"trigger={trigger} ±{tolerance}, LTP={ltp:.2f}"
+                    )
+                else:
+                    # Still waiting; keep in queue
+                    remaining_queue.append(entry)
+            
+            self.buy_queue = remaining_queue
+        
+        if ready_to_place:
+            self.save_state()
+        
+        return ready_to_place
+
     def snapshot(self):
         def _k(k):
             # JSON-safe key representation
@@ -332,6 +403,7 @@ class OrderLinker:
             # dicts keyed by tuples won't render in st.json; stringify keys
             "credits": {_k(k): v for k, v in self.buy_credits.items()},
             "queues": {_k(k): len(v) for k, v in self.sell_queues.items()},
+            "buy_queue_count": len(self.buy_queue),
             "buy_registry": self.buy_registry,
             "gtt_registry": self.gtt_registry,
             "instance_id": hex(id(self)),
@@ -353,6 +425,15 @@ class OrderLinker:
                     "credited_order_ids": list(self._credited_order_ids),
                     "credited_qty_by_key": {"|".join(map(str, k)): v for k, v in self._credited_qty_by_key.items()},
                     "credited_count_by_key": {"|".join(map(str, k)): v for k, v in self._credited_count_by_key.items()},
+                    "buy_queue": [
+                        {
+                            "intent": entry["intent"].model_dump(),
+                            "trigger": entry["trigger"],
+                            "tolerance": entry["tolerance"],
+                            "queued_at": entry.get("queued_at"),
+                        }
+                        for entry in self.buy_queue
+                    ],
                     "sell_queues": {
                         "|".join(map(str, key)): [intent.model_dump() for intent in queue]
                         for key, queue in self.sell_queues.items()
@@ -422,6 +503,16 @@ class OrderLinker:
                     tuple(k.split("|")): v for k, v in state.get("credited_count_by_key", {}).items()
                 })
                 
+                # Restore buy_queue with OrderIntent objects
+                for entry_data in state.get("buy_queue", []):
+                    entry = {
+                        "intent": OrderIntent(**entry_data["intent"]),
+                        "trigger": entry_data["trigger"],
+                        "tolerance": entry_data["tolerance"],
+                        "queued_at": entry_data.get("queued_at"),
+                    }
+                    self.buy_queue.append(entry)
+                
                 # Restore sell_queues with OrderIntent objects
                 for key_str, intents_data in state.get("sell_queues", {}).items():
                     key_parts = key_str.split("|")
@@ -432,7 +523,7 @@ class OrderLinker:
                 self._dedupe_queues_locked()
             
             print(f"[LINKER] ✅ State restored from {state_file_to_load.absolute()}")
-            print(f"[LINKER]   gtt_registry={len(self.gtt_registry)}, buy_registry={len(self.buy_registry)}, queues={len(self.sell_queues)}")
+            print(f"[LINKER]   gtt_registry={len(self.gtt_registry)}, buy_registry={len(self.buy_registry)}, buy_queue={len(self.buy_queue)}, sell_queues={len(self.sell_queues)}")
             print(f"[LINKER]   state_file_used: {state_file_to_load.absolute()}")
         except Exception as e:
             print(f"[LINKER] ⚠️ Failed to load state: {e}")

@@ -3,28 +3,30 @@ from typing import Optional, Dict, Any
 
 from services.ws.ws_manager import WSManager
 from services.ws.gtt_watcher import GTTWatcher
+from services.ws.buy_monitor import BuyMonitor
 
 
 _lock = threading.Lock()
 _ws: Optional[WSManager] = None
 _gtt: Optional[GTTWatcher] = None
+_buy_monitor: Optional[BuyMonitor] = None
 _token: Optional[str] = None
 _api_key: Optional[str] = None
 
 
 def ensure_workers(*, kite, api_key: Optional[str], access_token: Optional[str], linker) -> Dict[str, Any]:
-    """Ensure exactly one WSManager + GTTWatcher are running per Python process.
+    """Ensure exactly one WSManager + GTTWatcher + BuyMonitor are running per Python process.
 
     Streamlit page refresh / new sessions can rerun the script without stopping
     old daemon threads, leading to duplicated events. This guard centralizes the
     workers and restarts them cleanly when the token changes.
     """
-    global _ws, _gtt, _token, _api_key
+    global _ws, _gtt, _buy_monitor, _token, _api_key
 
     with _lock:
         # If credentials aren't ready yet, don't start workers.
         if not api_key or not access_token:
-            return {"ws": _ws, "gtt": _gtt, "token": _token}
+            return {"ws": _ws, "gtt": _gtt, "buy_monitor": _buy_monitor, "token": _token}
 
         # If token changes, restart workers (old token will fail / double-credit)
         if _token and access_token and _token != access_token:
@@ -58,14 +60,45 @@ def ensure_workers(*, kite, api_key: Optional[str], access_token: Optional[str],
             if not getattr(_gtt, "running", False):
                 _gtt.start()
 
-        return {"ws": _ws, "gtt": _gtt, "token": _token}
+        # BUY monitor
+        if _buy_monitor is None:
+            _buy_monitor = BuyMonitor(kite, linker, interval_sec=2.5)
+            # Set up callback to place BUYs when triggered
+            from services.orders.placement import place_orders
+            def _place_triggered_buys(intents: list):
+                try:
+                    print(f"[RUNTIME] Placing {len(intents)} triggered BUY(s)")
+                    results = place_orders(kite=kite, intents=intents, linker=linker, live=True)
+                    print(f"[RUNTIME] Placed {len(results)} triggered BUY(s)")
+                except Exception as e:
+                    print(f"[RUNTIME] Failed to place triggered BUYs: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            _buy_monitor.set_placement_callback(_place_triggered_buys)
+            _buy_monitor.start()
+        else:
+            try:
+                _buy_monitor.kite = kite
+                _buy_monitor.linker = linker
+            except Exception:
+                pass
+
+        return {"ws": _ws, "gtt": _gtt, "buy_monitor": _buy_monitor, "token": _token}
 
 
 def stop_workers() -> None:
     """Stop and clear process-wide workers."""
-    global _ws, _gtt
+    global _ws, _gtt, _buy_monitor
 
     with _lock:
+        if _buy_monitor is not None:
+            try:
+                _buy_monitor.stop()
+            except Exception:
+                pass
+            _buy_monitor = None
+
         if _gtt is not None:
             try:
                 _gtt.stop()
@@ -88,4 +121,5 @@ def snapshot_workers() -> Dict[str, Any]:
             "token_suffix": (_token[-6:] if _token else None),
             "ws": (_ws.snapshot() if _ws else None),
             "gtt": (_gtt.snapshot() if _gtt else None),
+            "buy_monitor": (_buy_monitor.snapshot() if _buy_monitor else None),
         }

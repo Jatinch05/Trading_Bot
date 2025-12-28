@@ -14,6 +14,7 @@ REQUIRED_COLS = [
     "gtt_trigger","gtt_limit",
     "gtt_trigger_1","gtt_limit_1",
     "gtt_trigger_2","gtt_limit_2",
+    "tolerance",
 ]
 
 ALLOWED_ORDER_TYPES = {"MARKET","LIMIT","SL","SL-M"}
@@ -128,8 +129,13 @@ def normalize_and_validate(df: pd.DataFrame, instruments) -> Tuple[List[OrderInt
                 raise ValueError(f"order_type must be one of {sorted(ALLOWED_ORDER_TYPES)}")
 
             price = _to_float_or_none(row["price"])
-            trig_regular = _to_float_or_none(row["trigger_price"])  # for regular SL/SL-M only
+            trig_regular = _to_float_or_none(row["trigger_price"])  # for regular SL/SL-M or BUY queue trigger
             disclosed_qty = _to_int_or_none(row["disclosed_qty"]) or 0
+            tolerance = _to_float_or_none(row["tolerance"])
+            
+            # If tolerance is set and non-negative, this is a queued BUY
+            if tolerance is not None and tolerance < 0:
+                raise ValueError("tolerance must be >= 0")
 
             # Tag normalization (only link:* allowed)
             tag = _norm_tag((str(_safe(row["tag"]) or "").strip()) or None)
@@ -149,6 +155,7 @@ def normalize_and_validate(df: pd.DataFrame, instruments) -> Tuple[List[OrderInt
                         disclosed_qty=disclosed_qty, tag=tag,
                         gtt="YES", gtt_type="SINGLE",
                         gtt_trigger=trig_s, gtt_limit=limit_s,
+                        tolerance=tolerance,
                     )
 
                 elif gtt_type == "OCO":
@@ -169,6 +176,7 @@ def normalize_and_validate(df: pd.DataFrame, instruments) -> Tuple[List[OrderInt
                         gtt="YES", gtt_type="OCO",
                         gtt_trigger_1=trig1, gtt_limit_1=limit1,
                         gtt_trigger_2=trig2, gtt_limit_2=limit2,
+                        tolerance=tolerance,
                     )
                 else:
                     raise ValueError("gtt_type must be SINGLE or OCO when gtt=YES")
@@ -203,7 +211,8 @@ def normalize_and_validate(df: pd.DataFrame, instruments) -> Tuple[List[OrderInt
                     order_type=order_type, price=price, trigger_price=trig_regular,
                     product=product, validity=validity, variety=variety,
                     disclosed_qty=disclosed_qty, tag=tag,
-                    gtt="NO", gtt_type=None
+                    gtt="NO", gtt_type=None,
+                    tolerance=tolerance,
                 )
 
             intents.append(intent)
