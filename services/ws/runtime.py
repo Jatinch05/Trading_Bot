@@ -10,21 +10,24 @@ _ws: Optional[WSManager] = None
 _gtt: Optional[GTTWatcher] = None
 _token: Optional[str] = None
 _api_key: Optional[str] = None
+_token_exchanged_at: Optional[float] = None  # Timestamp when token was last exchanged
 
 
-def ensure_workers(*, kite, api_key: Optional[str], access_token: Optional[str], linker) -> Dict[str, Any]:
+def ensure_workers(*, kite, api_key: Optional[str], access_token: Optional[str], linker, token_exchanged_at: Optional[float] = None) -> Dict[str, Any]:
     """Ensure exactly one WSManager + GTTWatcher are running per Python process.
 
     Streamlit page refresh / new sessions can rerun the script without stopping
     old daemon threads, leading to duplicated events. This guard centralizes the
     workers and restarts them cleanly when the token changes.
+    
+    token_exchanged_at: Unix timestamp when token was last exchanged (for age tracking)
     """
-    global _ws, _gtt, _token, _api_key
+    global _ws, _gtt, _token, _api_key, _token_exchanged_at
 
     with _lock:
         # If credentials aren't ready yet, don't start workers.
         if not api_key or not access_token:
-            return {"ws": _ws, "gtt": _gtt, "token": _token}
+            return {"ws": _ws, "gtt": _gtt, "token": _token, "token_exchanged_at": _token_exchanged_at}
 
         # If token changes, restart workers (old token will fail / double-credit)
         if _token and access_token and _token != access_token:
@@ -32,15 +35,18 @@ def ensure_workers(*, kite, api_key: Optional[str], access_token: Optional[str],
 
         _token = access_token or _token
         _api_key = api_key or _api_key
+        _token_exchanged_at = token_exchanged_at or _token_exchanged_at
 
         # WS
         if _ws is None:
             _ws = WSManager(api_key=_api_key, access_token=_token, linker=linker)
+            _ws.token_exchanged_at = _token_exchanged_at  # Pass token age info
             _ws.start()
         else:
             # If linker instance changed, rebind
             try:
                 _ws.linker = linker
+                _ws.token_exchanged_at = _token_exchanged_at
             except Exception:
                 pass
 
@@ -48,17 +54,19 @@ def ensure_workers(*, kite, api_key: Optional[str], access_token: Optional[str],
         if _gtt is None:
             _gtt = GTTWatcher(kite)
             _gtt.bind_linker(linker)
+            _gtt.token_exchanged_at = _token_exchanged_at  # Pass token age info
             _gtt.start()
         else:
             try:
                 _gtt.kite = kite
                 _gtt.bind_linker(linker)
+                _gtt.token_exchanged_at = _token_exchanged_at
             except Exception:
                 pass
             if not getattr(_gtt, "running", False):
                 _gtt.start()
 
-        return {"ws": _ws, "gtt": _gtt, "token": _token}
+        return {"ws": _ws, "gtt": _gtt, "token": _token, "token_exchanged_at": _token_exchanged_at}
 
 
 def stop_workers() -> None:

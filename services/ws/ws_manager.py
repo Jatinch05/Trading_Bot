@@ -2,6 +2,7 @@
 from kiteconnect import KiteTicker
 import threading
 import datetime as _dt
+import time
 
 class WSManager:
     def __init__(self, api_key, access_token, linker):
@@ -12,6 +13,7 @@ class WSManager:
         self._connected = False
         self._connection_time = None
         self._stopped = False
+        self.token_exchanged_at: float = None  # Set by runtime to track token age
 
         # KiteTicker stubs are sometimes typed as read-only; use setattr for compatibility.
         setattr(self.kws, "on_ticks", self.on_ticks)
@@ -90,6 +92,12 @@ class WSManager:
         self._log("[WS] No reconnect; giving up")
 
     def on_order_update(self, ws, data):
+        # Log token age periodically if available
+        if self.token_exchanged_at is not None:
+            token_age_hours = (time.time() - self.token_exchanged_at) / 3600
+            if token_age_hours > 23.5:
+                self._log(f"[WS] ⏰ Token age: {token_age_hours:.1f}h (>24h expiry, consider new token)")
+        
         # Credit linker only for BUY-side completes to release SELLs
         if data.get("status") == "COMPLETE" and data.get("transaction_type") == "BUY":
             oid = data.get("order_id")

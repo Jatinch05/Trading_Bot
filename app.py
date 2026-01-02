@@ -54,6 +54,7 @@ DEFAULT_STATE = {
     "linker": None,
     "ws": None,
     "gtt": None,
+    "token_exchanged_at": None,  # Timestamp when token was last exchanged
 }
 
 for k, v in DEFAULT_STATE.items():
@@ -205,6 +206,9 @@ if st.sidebar.button("Exchange Token", disabled=(auth is None or not request_tok
         st.session_state["access_token"] = tok
         auth.kite.set_access_token(tok)
         st.session_state["kite"] = auth.kite
+        # Reset token expiry timer
+        import time
+        st.session_state["token_exchanged_at"] = time.time()
         st.sidebar.success("✅ Token exchanged (session-only)")
     except Exception as e:
         st.sidebar.error(f"Exchange failed: {e}")
@@ -276,6 +280,16 @@ linker = ensure_linker()
 # Install (or refresh) release callback with current client
 _install_release_callback(linker, client)
 
+# Check token age and warn if approaching expiry
+import time
+if st.session_state["token_exchanged_at"] is not None:
+    token_age_hours = (time.time() - st.session_state["token_exchanged_at"]) / 3600
+    if token_age_hours > 23.5:
+        st.warning(
+            f"⚠️ **Token is {token_age_hours:.1f} hours old** (>24h expiry). "
+            "Consider exchanging a new one from the sidebar to prevent disruptions."
+        )
+
 # Ensure runtime services are initialized in LIVE mode
 if live_mode:
     workers = ensure_workers(
@@ -283,6 +297,7 @@ if live_mode:
         api_key=st.session_state.get("api_key"),
         access_token=st.session_state.get("access_token"),
         linker=linker,
+        token_exchanged_at=st.session_state.get("token_exchanged_at"),
     )
     # Keep references for debug panels
     st.session_state["gtt"] = workers.get("gtt")
