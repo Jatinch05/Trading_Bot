@@ -13,6 +13,7 @@ class BuyMonitor:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._placement_callback = None  # Callback to place BUYs when triggered
+        self.token_exchanged_at: float = None  # Set by runtime to track token age
         
     def set_placement_callback(self, cb):
         """Set a callback to place BUYs when they're ready: cb(list[OrderIntent])"""
@@ -54,6 +55,12 @@ class BuyMonitor:
     
     def _check_and_place(self):
         """Check queued BUYs against current prices and place if triggered."""
+        # Log token age periodically if available
+        if self.token_exchanged_at is not None:
+            token_age_hours = (time.time() - self.token_exchanged_at) / 3600
+            if token_age_hours > 23.5:
+                print(f"[BUY_MONITOR] ⏰ Token age: {token_age_hours:.1f}h (>24h expiry, consider new token)")
+        
         # Get list of symbols in buy queue
         queued_symbols = set()
         with self.linker._lock:

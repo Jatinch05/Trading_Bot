@@ -15,6 +15,7 @@ class GTTWatcher:
         self._thread = None
         self._linker = None
         self._poller = None  # Fallback order status poller
+        self.token_exchanged_at: float = None  # Set by runtime to track token age
 
     def bind_linker(self, linker):
         self._linker = linker
@@ -55,6 +56,12 @@ class GTTWatcher:
 
     def _poll(self):
         try:
+            # Log token age periodically if available
+            if self.token_exchanged_at is not None:
+                token_age_hours = (time.time() - self.token_exchanged_at) / 3600
+                if token_age_hours > 23.5:
+                    print(f"[GTT_WATCHER] ⏰ Token age: {token_age_hours:.1f}h (>24h expiry, consider new token)")
+            
             # Ensure pending contains all known GTT BUY ids from linker
             if self._linker:
                 for gid in self._linker.gtt_registry.keys():
