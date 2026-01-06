@@ -209,7 +209,10 @@ if st.sidebar.button("Exchange Token", disabled=(auth is None or not request_tok
         # Reset token expiry timer
         import time
         st.session_state["token_exchanged_at"] = time.time()
-        st.sidebar.success("✅ Token exchanged (session-only)")
+        # Stop old workers immediately (they have stale token)
+        stop_workers()
+        st.sidebar.success("✅ Token exchanged - workers will restart automatically")
+        st.rerun()
     except Exception as e:
         st.sidebar.error(f"Exchange failed: {e}")
 
